@@ -13,6 +13,7 @@ use oasgen::{oasgen, OaSchema, Server};
 
 use screenpipe_core::Desktop;
 
+use chrono::TimeZone;
 use screenpipe_db::{
     ContentType, DatabaseManager, FrameData, Order, SearchMatch, SearchResult, Speaker,
     TagContentType,
@@ -287,6 +288,7 @@ pub struct HealthCheckResponse {
     pub ui_status: String,
     pub message: String,
     pub verbose_instructions: Option<String>,
+    pub device_status_details: Option<String>,
 }
 
 #[derive(OaSchema, Serialize, Deserialize)]
@@ -456,7 +458,7 @@ pub(crate) async fn api_list_audio_devices(
         )
     })?;
 
-    let default_output_device = default_output_device().map_err(|e| {
+    let default_output_device = default_output_device().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             JsonResponse(json!({"error": format!("Failed to get default output device: {}", e)})),
@@ -594,12 +596,44 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
     let app_uptime = (now as i64) - (state.app_start_time.timestamp());
     let grace_period = 120; // 2 minutes in seconds
 
-    let last_capture = screenpipe_audio::core::LAST_AUDIO_CAPTURE.load(Ordering::Relaxed);
-    let audio_active = if app_uptime < grace_period {
-        true // Consider active during grace period
-    } else {
-        now - last_capture < 5 // Consider active if captured in last 5 seconds
-    };
+    // Get the status of all devices
+    let audio_devices = state.audio_manager.current_devices();
+    let mut device_statuses = Vec::new();
+    let mut global_audio_active = false;
+    let mut most_recent_audio_timestamp = 0; // Track the most recent timestamp
+
+    // Check each device
+    for device in &audio_devices {
+        let device_name = device.to_string();
+        let last_capture = screenpipe_audio::core::get_device_capture_time(&device_name);
+
+        // Update the most recent timestamp
+        most_recent_audio_timestamp = most_recent_audio_timestamp.max(last_capture);
+
+        let device_active = if app_uptime < grace_period {
+            true // Consider active during grace period
+        } else {
+            now - last_capture < 5 // Consider active if captured in last 5 seconds
+        };
+
+        // Track if any device is active
+        if device_active {
+            global_audio_active = true;
+        }
+        debug!(target: "server", "device status: {} {}", device_name, device_active);
+
+        device_statuses.push((device_name, device_active, last_capture));
+    }
+
+    // Fallback to global timestamp if no devices are detected
+    if audio_devices.is_empty() {
+        let last_capture = screenpipe_audio::core::LAST_AUDIO_CAPTURE.load(Ordering::Relaxed);
+        global_audio_active = if app_uptime < grace_period {
+            true // Consider active during grace period
+        } else {
+            now - last_capture < 5 // Consider active if captured in last 5 seconds
+        };
+    }
 
     let (last_frame, audio, last_ui) = match state.db.get_latest_timestamps().await {
         Ok((frame, audio, ui)) => (frame, audio, ui),
@@ -610,7 +644,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
     };
 
     let now = Utc::now();
-    let threshold = Duration::from_secs(3600); // 1 hour
+    let threshold = Duration::from_secs(1800); // 30 minutes
 
     let frame_status = if state.vision_disabled {
         "disabled"
@@ -623,16 +657,45 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
                 "ok"
             }
             Some(_) => "stale",
-            None => "no data",
+            None => "not_started",
         }
     };
 
     let audio_status = if state.audio_disabled {
-        "disabled"
-    } else if audio_active {
-        "ok"
+        "disabled".to_string()
+    } else if global_audio_active {
+        "ok".to_string()
     } else {
-        "stale"
+        match audio {
+            Some(timestamp)
+                if now.signed_duration_since(timestamp)
+                    < chrono::Duration::from_std(threshold).unwrap() =>
+            {
+                "stale".to_string()
+            }
+            Some(_) => "stale".to_string(),
+            None => "not_started".to_string(),
+        }
+    };
+
+    // Format device statuses as a string for a more detailed view
+    let device_status_details = if !device_statuses.is_empty() {
+        let now_secs = now.timestamp() as u64;
+        let device_details: Vec<String> = device_statuses
+            .iter()
+            .map(|(name, active, last_capture)| {
+                format!(
+                    "{}: {} (last activity: {}s ago)",
+                    name,
+                    if *active { "active" } else { "inactive" },
+                    now_secs.saturating_sub(*last_capture)
+                )
+            })
+            .collect();
+
+        Some(device_details.join(", "))
+    } else {
+        None
     };
 
     let ui_status = if !state.ui_monitoring_enabled {
@@ -646,7 +709,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
                 "ok"
             }
             Some(_) => "stale",
-            None => "no data",
+            None => "not_started",
         }
     };
 
@@ -670,15 +733,15 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
             unhealthy_systems.push("audio");
         }
         if ui_status != "ok" && ui_status != "disabled" {
-            unhealthy_systems.push("ui monitoring");
+            unhealthy_systems.push("ui");
         }
 
+        let systems_str = unhealthy_systems.join(", ");
         (
-            "unhealthy",
-            format!("some systems are not functioning properly: {}. frame status: {}, audio status: {}, ui status: {}",
-                    unhealthy_systems.join(", "), frame_status, audio_status, ui_status),
-            Some("if you're experiencing issues, please try contacting us on discord".to_string()),
-            500,
+            "degraded",
+            format!("some systems are not healthy: {}", systems_str),
+            Some(get_verbose_instructions(&unhealthy_systems)),
+            503,
         )
     };
 
@@ -686,15 +749,47 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
         status: overall_status.to_string(),
         status_code,
         last_frame_timestamp: last_frame,
-        last_audio_timestamp: audio,
+        last_audio_timestamp: if most_recent_audio_timestamp > 0 {
+            Some(
+                Utc.timestamp_opt(most_recent_audio_timestamp as i64, 0)
+                    .unwrap(),
+            )
+        } else {
+            None
+        },
         last_ui_timestamp: last_ui,
         frame_status: frame_status.to_string(),
-        audio_status: audio_status.to_string(),
+        audio_status,
         ui_status: ui_status.to_string(),
         message,
         verbose_instructions,
+        device_status_details,
     })
 }
+
+fn get_verbose_instructions(unhealthy_systems: &[&str]) -> String {
+    let mut instructions = String::new();
+
+    if unhealthy_systems.contains(&"vision") {
+        instructions.push_str("Vision system is not working properly. Check if screen recording permissions are enabled.\n");
+    }
+
+    if unhealthy_systems.contains(&"audio") {
+        instructions.push_str("Audio system is not working properly. Check if microphone permissions are enabled and devices are connected.\n");
+    }
+
+    if unhealthy_systems.contains(&"ui") {
+        instructions.push_str("UI monitoring is not working properly. Check if accessibility permissions are enabled.\n");
+    }
+
+    if instructions.is_empty() {
+        instructions =
+            "If you're experiencing issues, please try contacting us on Discord.".to_string();
+    }
+
+    instructions
+}
+
 // Request and response structs
 #[derive(OaSchema, Deserialize)]
 struct DownloadPipeRequest {
@@ -1068,10 +1163,6 @@ impl SCServer {
             .post("/v1/embeddings", create_embeddings)
             .post("/audio/device/start", start_audio_device)
             .post("/audio/device/stop", stop_audio_device)
-            // .post("/vision/start", start_vision_device)
-            // .post("/vision/stop", stop_vision_device)
-            // .post("/audio/restart", restart_audio_devices)
-            // .post("/vision/restart", restart_vision_devices)
             .route_yaml_spec("/openapi.yaml")
             .route_json_spec("/openapi.json")
             .freeze();
@@ -2426,65 +2517,131 @@ async fn get_pipe_build_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<JsonResponse<Value>, (StatusCode, JsonResponse<Value>)> {
     let pipe_dir = state.screenpipe_dir.join("pipes").join(&pipe_id);
+    let update_temp_dir = std::env::temp_dir().join(format!("{}_update", pipe_id));
     let temp_dir = pipe_dir.with_extension("_temp");
-
-    // First check temp directory if it exists
-    if temp_dir.exists() {
-        let temp_pipe_json = temp_dir.join("pipe.json");
-        if temp_pipe_json.exists() {
-            let pipe_json = tokio::fs::read_to_string(&temp_pipe_json)
+    
+    // 1. First check if the update temp directory exists
+    if update_temp_dir.exists() {
+        debug!("Update temp directory exists for pipe: {}", pipe_id);
+        
+        // Check if there's a pipe.json in the update temp directory
+        let update_pipe_json_path = update_temp_dir.join("pipe.json");
+        if update_pipe_json_path.exists() {
+            let pipe_json = tokio::fs::read_to_string(&update_pipe_json_path)
                 .await
                 .map_err(|e| {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        JsonResponse(
-                            json!({"error": format!("Failed to read temp pipe config: {}", e)}),
-                        ),
+                        JsonResponse(json!({"error": format!("Failed to read update temp pipe config: {}", e)})),
                     )
                 })?;
 
             let pipe_config: Value = serde_json::from_str(&pipe_json).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    JsonResponse(
-                        json!({"error": format!("Failed to parse temp pipe config: {}", e)}),
-                    ),
+                    JsonResponse(json!({"error": format!("Failed to parse update temp pipe config: {}", e)})),
                 )
             })?;
 
-            info!("{:?}", pipe_config);
-            let build_status = pipe_config.get("buildStatus").unwrap_or(&Value::Null);
-            return Ok(JsonResponse(json!({ "buildStatus": build_status })));
+            // Return the buildStatus if it exists
+            if let Some(build_status) = pipe_config.get("buildStatus") {
+                debug!("Found build status in update temp directory for pipe: {}", pipe_id);
+                return Ok(JsonResponse(build_status.clone()));
+            }
         }
+        
+        // If no buildStatus found in update temp directory, return a default in_progress status
+        return Ok(JsonResponse(json!({
+            "status": "in_progress",
+            "step": "downloading",
+            "message": "Update in progress"
+        })));
     }
 
-    // If no temp directory or no pipe.json in temp, check the main pipe directory
-    let pipe_json_path = pipe_dir.join("pipe.json");
-    if !pipe_json_path.exists() {
+    // 2. Check if the pipe directory exists
+    if pipe_dir.exists() {
+        // Then check if there's a pipe.json file
+        let pipe_json_path = pipe_dir.join("pipe.json");
+        if pipe_json_path.exists() {
+            let pipe_json = tokio::fs::read_to_string(&pipe_json_path)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        JsonResponse(json!({"error": format!("Failed to read pipe config: {}", e)})),
+                    )
+                })?;
+
+            let pipe_config: Value = serde_json::from_str(&pipe_json).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({"error": format!("Failed to parse pipe config: {}", e)})),
+                )
+            })?;
+
+            // Check if there's a buildStatus field
+            if let Some(build_status) = pipe_config.get("buildStatus") {
+                // Return the build status directly
+                return Ok(JsonResponse(build_status.clone()));
+            }
+        } else {
+            // Pipe directory exists but pipe.json doesn't exist yet
+            // This likely means the pipe is still being created
+            debug!("Pipe directory exists but pipe.json not found for pipe: {}", pipe_id);
+            return Ok(JsonResponse(json!({
+                "status": "in_progress",
+                "step": "creating_config",
+                "message": "Creating pipe configuration"
+            })));
+        }
+    } else {
+        // If pipe directory doesn't exist, check temp directory
+        if temp_dir.exists() {
+            let temp_pipe_json = temp_dir.join("pipe.json");
+            if temp_pipe_json.exists() {
+                let pipe_json = tokio::fs::read_to_string(&temp_pipe_json)
+                    .await
+                    .map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            JsonResponse(
+                                json!({"error": format!("Failed to read temp pipe config: {}", e)}),
+                            ),
+                        )
+                    })?;
+
+                let pipe_config: Value = serde_json::from_str(&pipe_json).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        JsonResponse(
+                            json!({"error": format!("Failed to parse temp pipe config: {}", e)}),
+                        ),
+                    )
+                })?;
+
+                debug!("Found build status in temp directory for pipe: {}", pipe_id);
+                if let Some(build_status) = pipe_config.get("buildStatus") {
+                    return Ok(JsonResponse(build_status.clone()));
+                }
+            }
+            
+            // Temp directory exists but no pipe.json or no buildStatus
+            return Ok(JsonResponse(json!({
+                "status": "in_progress",
+                "step": "initializing",
+                "message": "Initializing pipe"
+            })));
+        }
+        
+        // If neither pipe directory nor temp directory exists, return not found
         return Err((
             StatusCode::NOT_FOUND,
             JsonResponse(json!({"error": "Pipe not found"})),
         ));
     }
 
-    let pipe_json = tokio::fs::read_to_string(&pipe_json_path)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                JsonResponse(json!({"error": format!("Failed to read pipe config: {}", e)})),
-            )
-        })?;
-
-    let pipe_config: Value = serde_json::from_str(&pipe_json).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            JsonResponse(json!({"error": format!("Failed to parse pipe config: {}", e)})),
-        )
-    })?;
-
-    let build_status = pipe_config.get("buildStatus").unwrap_or(&Value::Null);
-    Ok(JsonResponse(json!({ "buildStatus": build_status })))
+    // If we get here, there's a pipe.json but no buildStatus field
+    Ok(JsonResponse(json!(null)))
 }
 
 #[oasgen]

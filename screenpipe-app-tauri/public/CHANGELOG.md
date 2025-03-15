@@ -1,12 +1,18 @@
-Based on the provided commits, here is the changelog for the new screenpipe update:
+Based on your commits, here's the updated changelog:
+
+### **New Features:**
+- **Automatically pause vision capture on sleep:** Implemented a feature that automatically pauses vision capture when the computer goes to sleep and resumes when waking up.
 
 ### **Improvements:**
-- **Removed emojis and ASCII Art from installation prompts:** Cleaned up the install.ps to present a more professional and straightforward installation experience.
+- **Bumped search enhancements:** Improved search capabilities for a better user experience.
 
 ### **Fixes:**
-- **Attempted fix for sideload issue:** Addressed issues related to sideloading the application to enhance overall functionality. 
+- **Fixed search filter generator:** Resolved an issue where the search filter generator was not functioning properly.
+- **Fixed AI search functionality:** Addressed a bug that caused the AI-based search not to work correctly.
+- **Fixed CLI command on Windows:** Corrected functionality of CLI command specific to Windows.
+- **Fixed longevity issues:** Resolved various longevity-related problems to improve overall stability.
 
-(Note: The specific result of the attempt fix for sideload is not clear; only the action taken is included under fixes.)
+This changelog should provide clear value to your users based on the identified commits.
 
-#### **Full Changelog:** [20c3c..c3905](https://github.com/mediar-ai/screenpipe/compare/20c3c..c3905)
+#### **Full Changelog:** [848d6..52ed8](https://github.com/mediar-ai/screenpipe/compare/848d6..52ed8)
 

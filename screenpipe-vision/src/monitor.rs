@@ -1,6 +1,7 @@
 use anyhow::{Error, Result};
 use image::DynamicImage;
 use std::sync::Arc;
+use tracing;
 use xcap::Monitor;
 
 #[derive(Clone)]
@@ -23,7 +24,7 @@ impl SafeMonitor {
         let monitor_data = Arc::new(MonitorData {
             width: monitor.width().unwrap(),
             height: monitor.height().unwrap(),
-            name: monitor.name().unwrap(),
+            name: monitor.name().unwrap().to_string(),
             is_primary: monitor.is_primary().unwrap(),
         });
 
@@ -108,13 +109,30 @@ pub async fn get_default_monitor() -> SafeMonitor {
 }
 
 pub async fn get_monitor_by_id(id: u32) -> Option<SafeMonitor> {
-    tokio::task::spawn_blocking(move || {
-        Monitor::all()
-            .unwrap()
-            .into_iter()
-            .find(|m| m.id().unwrap() == id)
-            .map(SafeMonitor::new)
+    tokio::task::spawn_blocking(move || match Monitor::all() {
+        Ok(monitors) => {
+            let monitor_count = monitors.len();
+            let monitor_ids: Vec<u32> = monitors.iter().map(|m| m.id().unwrap()).collect();
+
+            tracing::debug!(
+                "Found {} monitors with IDs: {:?}",
+                monitor_count,
+                monitor_ids
+            );
+
+            monitors
+                .into_iter()
+                .find(|m| m.id().unwrap() == id)
+                .map(SafeMonitor::new)
+        }
+        Err(e) => {
+            tracing::error!("Failed to list monitors: {}", e);
+            None
+        }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|e| {
+        tracing::error!("Task to get monitor by ID {} panicked: {}", id, e);
+        None
+    })
 }

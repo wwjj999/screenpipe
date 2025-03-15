@@ -132,6 +132,7 @@ export type Settings = {
 	useAllMonitors: boolean;
 	aiPresets: AIPreset[];
 	enableRealtimeVision: boolean;
+	autoUpdatePipes: boolean;
 };
 
 export const DEFAULT_PROMPT = `Rules:
@@ -156,7 +157,7 @@ const DEFAULT_SETTINGS: Settings = {
 - Always answer my question/intent, do not make up things
 `,
 	devMode: false,
-	audioTranscriptionEngine: "deepgram",
+	audioTranscriptionEngine: "whisper-large-v3-turbo",
 	ocrEngine: "default",
 	monitorIds: ["default"],
 	audioDevices: ["default"],
@@ -196,10 +197,11 @@ const DEFAULT_SETTINGS: Settings = {
 	stopAudioShortcut: "",
 	pipeShortcuts: {},
 	enableRealtimeAudioTranscription: false,
-	realtimeAudioTranscriptionEngine: "whisper-large-v3-turbo",
+	realtimeAudioTranscriptionEngine: "deepgram",
 	disableVision: false,
 	useAllMonitors: false,
-	enableRealtimeVision: false,
+	enableRealtimeVision: true,
+	autoUpdatePipes: false, // Default to false for auto-updating pipes
 };
 
 const DEFAULT_IGNORED_WINDOWS_IN_ALL_OS = [
@@ -324,7 +326,8 @@ const tauriStorage: PersistStorage = {
 		// Set new flattened values
 		for (const [key, val] of Object.entries(flattenedValue)) {
 			if (!key || !key.length) continue;
-			const defaultValue = key in DEFAULT_SETTINGS ? DEFAULT_SETTINGS[key as keyof Settings] : "";
+			const defaultValue =
+				key in DEFAULT_SETTINGS ? DEFAULT_SETTINGS[key as keyof Settings] : "";
 			await tauriStore.set(key, val === undefined ? defaultValue : val);
 		}
 
