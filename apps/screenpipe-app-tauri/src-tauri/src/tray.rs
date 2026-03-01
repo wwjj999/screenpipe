@@ -683,6 +683,10 @@ pub fn setup_tray_menu_updater(app: AppHandle, update_item: &tauri::menu::MenuIt
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             interval.tick().await;
+            if QUIT_REQUESTED.load(Ordering::SeqCst) {
+                info!("Tray menu updater received quit request, shutting down.");
+                break;
+            }
             if let Err(e) = update_menu_if_needed(&app, &update_item).await {
                 error!("Failed to update tray menu: {:#}", e);
             }

@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 #[allow(unused_imports)] // used on macOS
+use std::sync::atomic::Ordering;
+use crate::tray::QUIT_REQUESTED;
 use tracing::{debug, info, warn, error};
 
 #[derive(Serialize, Deserialize, Type, Clone)]
@@ -631,6 +633,10 @@ pub async fn start_permission_monitor(app: tauri::AppHandle) {
 
     loop {
         check_interval.tick().await;
+        if QUIT_REQUESTED.load(Ordering::SeqCst) {
+            info!("Permission monitor received quit request, shutting down.");
+            break;
+        }
 
         let perms = do_permissions_check(false);
         let screen_ok = perms.screen_recording.permitted();
