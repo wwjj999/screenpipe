@@ -1,6 +1,6 @@
 [package]
 name = "screenpipe-app"
-version = "2.0.623"
+version = "2.1.0"
 description = "24/7 memory for your desktop. 100% local."
 authors = ["you"]
 license = ""
@@ -170,7 +170,6 @@ lazy_static = "1.5.0"
 
 
 [features]
-cudart = []
 metal = ["screenpipe-audio/metal"]
 pulseaudio = ["screenpipe-audio/pulseaudio"]
 vulkan = ["screenpipe-audio/vulkan"]
@@ -192,12 +191,7 @@ enterprise-build = []
 # On-device AI via Apple Foundation Models (macOS 26+ / Xcode 26+ only)
 apple-intelligence = ["screenpipe-server/apple-intelligence"]
 
-# Qwen3-ASR speech-to-text engine (GGML, 0.6B — Metal/Vulkan/CUDA GPU acceleration)
 qwen3-asr = ["screenpipe-server/qwen3-asr"]
-
-# GPU backends for Qwen3-ASR (GGML) — Metal auto-detects on macOS
-coreml = ["screenpipe-server/coreml"]
-directml = ["screenpipe-server/directml"]
 
 
 [package.metadata.cargo-machete]

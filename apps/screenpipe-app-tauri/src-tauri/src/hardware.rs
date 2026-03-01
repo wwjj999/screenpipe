@@ -18,7 +18,7 @@ pub struct HardwareCapability {
 }
 
 pub fn detect_hardware_capability() -> HardwareCapability {
-    let has_gpu = cfg!(feature = "metal") || cfg!(feature = "vulkan") || cfg!(feature = "cudart");
+    let has_gpu = cfg!(feature = "metal") || cfg!(feature = "vulkan");
 
     // Only refresh CPU + memory — avoid new_all() which enumerates all
     // processes/disks/networks and can take hundreds of ms.

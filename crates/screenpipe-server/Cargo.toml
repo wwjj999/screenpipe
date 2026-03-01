@@ -125,8 +125,6 @@ debug-console = ["console-subscriber"]
 pulseaudio = ["screenpipe-audio/pulseaudio"]
 apple-intelligence = ["dep:screenpipe-apple-intelligence"]
 qwen3-asr = ["screenpipe-audio/qwen3-asr"]
-coreml = ["screenpipe-audio/coreml"]
-directml = ["screenpipe-audio/directml"]
 
 [[bin]]
 name = "screenpipe"
