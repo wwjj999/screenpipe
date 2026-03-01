@@ -116,6 +116,7 @@ pub async fn retranscribe_handler(
     };
 
     let deepgram_api_key = audio_manager.deepgram_api_key().await;
+    let _openai_compatible_config = audio_manager.openai_compatible_config().await;
     let languages = audio_manager.languages().await;
 
     // Build effective vocabulary: user-provided + prompt words as bias entries

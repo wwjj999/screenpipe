@@ -133,14 +133,18 @@ async fn test_transcription_accuracy() {
 
             let mut transcription = String::new();
             while let Some(segment) = segments.recv().await {
-                let transcript = session
-                    .transcribe(
-                        &segment.samples,
-                        audio_input.sample_rate,
-                        &audio_input.device.to_string(),
-                    )
-                    .await
-                    .unwrap();
+                let transcript = stt(
+                    &segment.samples,
+                    audio_input.sample_rate,
+                    &audio_input.device.to_string(),
+                    Arc::new(AudioTranscriptionEngine::WhisperLargeV3Turbo),
+                    None,
+                    None,
+                    vec![Language::English],
+                    &mut whisper_state,
+                )
+                .await
+                .unwrap();
 
                 transcription.push_str(&transcript);
             }

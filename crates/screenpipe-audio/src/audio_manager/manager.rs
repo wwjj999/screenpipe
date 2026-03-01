@@ -162,21 +162,41 @@ impl AudioManager {
             let db = self.db.clone();
             let engine_ref = self.engine.clone();
             let on_insert_bg = self.on_transcription_insert.clone();
+            let options_ref = self.options.clone();
             tokio::spawn(async move {
                 // Wait for model to load + initial recordings
                 tokio::time::sleep(Duration::from_secs(120)).await;
                 loop {
-                    if let Some(ref engine) = *engine_ref.read().await {
+                    let engine_guard = engine_ref.read().await;
+                    if let Some(ref transcription_engine) = *engine_guard {
+                        let opts = options_ref.read().await;
+                        let audio_engine = opts.transcription_engine.clone();
+                        let key = opts.deepgram_api_key.clone();
+                        let openai_config = opts.openai_compatible_config.clone();
+                        let langs = opts.languages.clone();
+                        let vocab = opts.vocabulary.clone();
+                        drop(opts);
+                        
+                        // Get whisper context from transcription engine
+                        let whisper_ctx = transcription_engine.whisper_context();
+                        
                         let count = super::reconciliation::reconcile_untranscribed(
                             &db,
-                            engine,
+                            transcription_engine,
                             on_insert_bg.as_ref(),
+                            whisper_ctx,
+                            audio_engine,
+                            key,
+                            openai_config,
+                            langs,
+                            &vocab,
                         )
                         .await;
                         if count > 0 {
                             info!("reconciliation: transcribed {} orphaned chunks", count);
                         }
                     }
+                    drop(engine_guard);
                     tokio::time::sleep(Duration::from_secs(300)).await;
                 }
             });
@@ -382,6 +402,7 @@ impl AudioManager {
         let output_path = options.output_path.clone();
         let languages = options.languages.clone();
         let deepgram_api_key = options.deepgram_api_key.clone();
+        let openai_compatible_config = options.openai_compatible_config.clone();
         let audio_transcription_engine = options.transcription_engine.clone();
         let vocabulary = options.vocabulary.clone();
         let is_batch_mode = options.transcription_mode == TranscriptionMode::Batch;
@@ -395,10 +416,10 @@ impl AudioManager {
 
         // Build unified transcription engine — only loads the needed model
         let engine = TranscriptionEngine::new(
-            audio_transcription_engine,
-            deepgram_api_key,
-            languages,
-            vocabulary,
+            audio_transcription_engine.clone(),
+            deepgram_api_key.clone(),
+            languages.clone(),
+            vocabulary.clone(),
         )
         .await?;
 
@@ -470,10 +491,17 @@ impl AudioManager {
                             info!(
                                 "batch mode: audio session ended, transcribing accumulated audio"
                             );
+                            let whisper_ctx = engine.whisper_context();
                             let count = super::reconciliation::reconcile_untranscribed(
                                 &db,
                                 &engine,
                                 on_insert_session.as_ref(),
+                                whisper_ctx,
+                                audio_transcription_engine.clone(),
+                                deepgram_api_key.clone(),
+                                openai_compatible_config.clone(),
+                                languages.clone(),
+                                &vocabulary,
                             )
                             .await;
                             info!("batch mode: transcribed {} chunks after session end", count);
@@ -488,6 +516,10 @@ impl AudioManager {
                                 embedding_manager.clone(),
                                 embedding_extractor.clone(),
                                 &output_path.clone().unwrap(),
+                                audio_transcription_engine.clone(),
+                                deepgram_api_key.clone(),
+                                openai_compatible_config.clone(),
+                                languages.clone(),
                                 &transcription_sender.clone(),
                                 &mut session,
                                 metrics.clone(),
@@ -507,6 +539,10 @@ impl AudioManager {
                             embedding_manager.clone(),
                             embedding_extractor.clone(),
                             &output_path.clone().unwrap(),
+                            audio_transcription_engine.clone(),
+                            deepgram_api_key.clone(),
+                            openai_compatible_config.clone(),
+                            languages.clone(),
                             &transcription_sender.clone(),
                             &mut session,
                             metrics.clone(),
@@ -526,6 +562,10 @@ impl AudioManager {
                         embedding_manager.clone(),
                         embedding_extractor.clone(),
                         &output_path.clone().unwrap(),
+                        audio_transcription_engine.clone(),
+                        deepgram_api_key.clone(),
+                        openai_compatible_config.clone(),
+                        languages.clone(),
                         &transcription_sender.clone(),
                         &mut session,
                         metrics.clone(),
@@ -535,6 +575,27 @@ impl AudioManager {
                     {
                         error!("Error processing audio: {:?}", e);
                     }
+                }
+
+                if let Err(e) = process_audio_input(
+                    audio.clone(),
+                    vad_engine.clone(),
+                    segmentation_model_path.clone(),
+                    embedding_manager.clone(),
+                    embedding_extractor.clone(),
+                    &output_path.clone().unwrap(),
+                    audio_transcription_engine.clone(),
+                    deepgram_api_key.clone(),
+                    openai_compatible_config.clone(),
+                    languages.clone(),
+                    &transcription_sender.clone(),
+                    &mut session,
+                    metrics.clone(),
+                    persisted_file_path.clone(),
+                )
+                .await
+                {
+                    error!("Error processing audio: {:?}", e);
                 }
             }
         }))
@@ -618,6 +679,11 @@ impl AudioManager {
     /// Returns the current deepgram API key.
     pub async fn deepgram_api_key(&self) -> Option<String> {
         self.options.read().await.deepgram_api_key.clone()
+    }
+
+    /// Returns the current OpenAI Compatible config.
+    pub async fn openai_compatible_config(&self) -> Option<crate::OpenAICompatibleConfig> {
+        self.options.read().await.openai_compatible_config.clone()
     }
 
     /// Returns the current languages.
