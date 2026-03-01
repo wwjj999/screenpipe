@@ -231,9 +231,9 @@ jobs:
             tauri-args: "--target x86_64-apple-darwin --features metal,official-build"
             os_type: "macos"
           - platform: ${{ needs.check_commit.outputs.windows_runner || 'windows-2022' }}
-            args: "--target x86_64-pc-windows-msvc --features mkl"
+            args: "--target x86_64-pc-windows-msvc --features mkl,vulkan"
             pre-build-args: ""
-            tauri-args: "--target x86_64-pc-windows-msvc --features official-build"
+            tauri-args: "--target x86_64-pc-windows-msvc --features official-build,vulkan"
             os_type: "windows"
           # Linux disabled - too many bundling issues
           # - platform: "ubuntu-22.04"
@@ -1112,7 +1112,7 @@ jobs:
           Push-Location ..
           # Skip frontend rebuild (already built for stable) and vulkan
           $env:TAURI_CLI_CONFIG = '{"build":{"beforeBuildCommand":""}}'
-          bunx tauri build --target x86_64-pc-windows-msvc --features mkl,official-build
+          bunx tauri build --target x86_64-pc-windows-msvc --features mkl,vulkan,official-build
           Pop-Location
           Write-Host "=== Beta rebuild complete ==="
 
