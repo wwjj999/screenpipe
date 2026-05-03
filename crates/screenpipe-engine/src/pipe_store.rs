@@ -222,14 +222,23 @@ impl PipeStore for SqlitePipeStore {
         &self,
         limit_per_pipe: i32,
     ) -> Result<std::collections::HashMap<String, Vec<PipeExecution>>> {
+        // List view: skip stdout/stderr — they're MB-scale per row (observed avg
+        // ~1.2 MB, max 112 MB), and SELECT * through a window function shuffles
+        // every row's full payload through SQLite's sorter even though the list
+        // only returns the top N per pipe. Use get_executions(name, limit) when
+        // the UI expands a row and actually needs the output text.
         let rows = sqlx::query_as::<_, PipeExecutionRow>(
             r#"SELECT id, pipe_name, status, trigger_type, pid, model, provider,
-                      started_at, finished_at, stdout, stderr, exit_code,
-                      error_type, error_message, duration_ms, session_path
+                      started_at, finished_at,
+                      '' AS stdout, '' AS stderr,
+                      exit_code, error_type, error_message, duration_ms, session_path
                FROM (
-                   SELECT *, ROW_NUMBER() OVER (
-                       PARTITION BY pipe_name ORDER BY id DESC
-                   ) AS rn
+                   SELECT id, pipe_name, status, trigger_type, pid, model, provider,
+                          started_at, finished_at, exit_code, error_type, error_message,
+                          duration_ms, session_path,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY pipe_name ORDER BY id DESC
+                          ) AS rn
                    FROM pipe_executions
                )
                WHERE rn <= ?
