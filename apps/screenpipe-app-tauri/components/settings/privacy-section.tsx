@@ -710,10 +710,10 @@ export function PrivacySection() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
                     Offline Mode
-                    <HelpTooltip text="Prevents pipes from accessing the internet. Forces local AI models (Ollama), disables web search, blocks external API calls, and turns off usage analytics. Crash reports (Sentry) and auto-updates still work. Local network (localhost, LAN) remains accessible." />
+                    <HelpTooltip text="Forces local AI models (Ollama), disables Pi web search, blocks app analytics, and refuses to run pipes whose pipe.md uses non-localhost network calls (curl, fetch, bunx, npm/bun/pip install, playwright install). Localhost / LAN / .local hosts remain accessible. Crash reports (Sentry) and auto-updates still work." />
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Pipes can only use local AI and local network
+                    Local AI + local network only; pipes calling external URLs are blocked
                   </p>
                 </div>
               </div>
@@ -726,7 +726,7 @@ export function PrivacySection() {
             </div>
             {settings.offlineMode && (
               <div className="mt-2 ml-[26px] text-xs text-muted-foreground space-y-1">
-                <p>Cloud AI providers, web search, and external connections are disabled.</p>
+                <p>Cloud AI providers, Pi web search, and app analytics are disabled. Pipes whose pipe.md fetches from non-localhost URLs (or runs bunx / npm install / playwright install) refuse to run — see the pipe&apos;s run log for the exact line that tripped the gate.</p>
               </div>
             )}
           </CardContent>

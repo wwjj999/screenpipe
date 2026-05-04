@@ -2160,6 +2160,25 @@ impl PipeManager {
                 }
             };
 
+            // Offline mode: refuse to run pipes whose body invokes network operations.
+            // The Privacy → Offline Mode toggle promises "pipes can only use local AI
+            // and local network", but pipe.md is arbitrary bash/bun — without this gate
+            // a pipe can still curl, bunx playwright install, npm install, etc. (Reported
+            // by user mark.karamyar after Research Rabbit installed Playwright + ran
+            // web_search with offline mode supposedly enabled.)
+            if crate::offline::is_offline_mode() {
+                let hits = detect_pipe_network_use(&body);
+                if !hits.is_empty() {
+                    return Err(anyhow!(
+                        "pipe '{}' uses network operations and offline mode is on — refusing to run. \
+                         Detected: {}. Disable offline mode in Settings → Privacy to run this pipe, \
+                         or audit the pipe.md to confirm the calls are localhost-only.",
+                        name,
+                        hits.join("; ")
+                    ));
+                }
+            }
+
             let executor = self
                 .executors
                 .get(&config.agent)
@@ -3959,6 +3978,79 @@ impl PipeManager {
 // Front-matter parsing
 // ---------------------------------------------------------------------------
 
+/// Scan pipe body for operations that would access the public internet.
+///
+/// Returns a list of human-readable hits (e.g. `"line 42: bunx playwright install"`),
+/// empty when the body looks localhost-only. Used by the offline-mode runtime gate
+/// in `run_pipe_with_trigger_inner` to honor the Privacy → Offline Mode promise.
+///
+/// Heuristic — conservative on false positives (we'd rather miss a network call
+/// than block a legitimate localhost-only pipe). Detects:
+/// - Package installs that fetch from a registry: bunx, `bun x`, `npm install`,
+///   `bun install`, `pip install`, `playwright install`, `brew install`
+/// - Direct downloaders: `wget`, `curl` with a non-localhost URL
+/// - URLs in any context (`http(s)://`) where the host is not localhost / 127.* / ::1
+///
+/// Anything inside fenced code blocks AND prose (rare but possible) is checked
+/// uniformly; comments aren't stripped — false positives here just mean a pipe
+/// gets blocked under offline mode and the user can audit the pipe.md.
+pub fn detect_pipe_network_use(body: &str) -> Vec<String> {
+    let mut hits = Vec::new();
+    for (i, line) in body.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') && !trimmed.contains("://") {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+
+        // Package / browser installs that fetch from a remote registry.
+        let install_pattern = [
+            ("bunx ", "bunx <pkg> downloads from npm"),
+            ("bun x ", "bun x <pkg> downloads from npm"),
+            ("npm install", "npm install fetches from npm registry"),
+            ("npm i ", "npm i fetches from npm registry"),
+            ("bun install", "bun install fetches from npm registry"),
+            ("bun add ", "bun add fetches from npm registry"),
+            ("pip install", "pip install fetches from PyPI"),
+            ("playwright install", "playwright install downloads browsers"),
+            ("brew install", "brew install fetches from Homebrew"),
+            ("wget ", "wget downloads from a remote URL"),
+        ];
+        for (needle, why) in install_pattern {
+            if lower.contains(needle) {
+                hits.push(format!("line {}: {} ({})", i + 1, needle.trim(), why));
+            }
+        }
+
+        // URLs — flag any non-localhost host. Cheap host check: split on "://"
+        // and read the next token until the first '/', '"', '\'', ')', or whitespace.
+        for proto in ["http://", "https://"] {
+            let mut rest = lower.as_str();
+            while let Some(idx) = rest.find(proto) {
+                let after = &rest[idx + proto.len()..];
+                let host: String = after
+                    .chars()
+                    .take_while(|c| !matches!(c, '/' | '"' | '\'' | ')' | ' ' | '\t' | '`'))
+                    .collect();
+                let host_only = host.split(':').next().unwrap_or(&host);
+                let is_local = host_only == "localhost"
+                    || host_only.starts_with("127.")
+                    || host_only == "::1"
+                    || host_only == "0.0.0.0"
+                    || host_only.ends_with(".local")
+                    || host_only.ends_with(".localhost");
+                if !is_local && !host_only.is_empty() {
+                    hits.push(format!("line {}: {}{}", i + 1, proto, host_only));
+                }
+                rest = &after[host.len()..];
+            }
+        }
+    }
+    hits.sort();
+    hits.dedup();
+    hits
+}
+
 /// Parse a pipe.md file into (config, prompt_body).
 pub fn parse_frontmatter(content: &str) -> Result<(PipeConfig, String)> {
     let content = content.trim();
@@ -4591,6 +4683,77 @@ impl Drop for PipeManager {
 
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod network_detection_tests {
+    use super::*;
+
+    #[test]
+    fn pure_localhost_curl_is_clean() {
+        let body = r#"
+```bash
+curl -s "http://localhost:3030/search?limit=10"
+curl -s "http://127.0.0.1:3030/health"
+```
+"#;
+        assert!(detect_pipe_network_use(body).is_empty());
+    }
+
+    #[test]
+    fn playwright_install_is_caught() {
+        let body = r#"
+```bash
+bun x playwright install chromium
+```
+"#;
+        let hits = detect_pipe_network_use(body);
+        assert!(hits.iter().any(|h| h.contains("bun x")));
+        assert!(hits.iter().any(|h| h.contains("playwright install")));
+    }
+
+    #[test]
+    fn external_url_is_caught() {
+        let body = r#"
+```bash
+curl -s "https://api.example.com/v1/data"
+```
+"#;
+        let hits = detect_pipe_network_use(body);
+        assert!(hits.iter().any(|h| h.contains("https://api.example.com")));
+    }
+
+    #[test]
+    fn package_installs_are_caught() {
+        let body = r#"
+```bash
+npm install some-pkg
+bun install other-pkg
+pip install yet-another
+brew install ffmpeg
+```
+"#;
+        let hits = detect_pipe_network_use(body);
+        assert!(hits.iter().any(|h| h.contains("npm install")));
+        assert!(hits.iter().any(|h| h.contains("bun install")));
+        assert!(hits.iter().any(|h| h.contains("pip install")));
+        assert!(hits.iter().any(|h| h.contains("brew install")));
+    }
+
+    #[test]
+    fn local_dotlocal_hosts_are_clean() {
+        let body = r#"curl http://my-mac.local:8080/ http://x.localhost/"#;
+        assert!(detect_pipe_network_use(body).is_empty());
+    }
+
+    #[test]
+    fn comments_with_urls_are_still_flagged() {
+        // Conservative: prose mentioning a public URL still flags. Better to
+        // err safe under offline mode than to miss a real call.
+        let body = "see https://example.com for details";
+        let hits = detect_pipe_network_use(body);
+        assert!(hits.iter().any(|h| h.contains("https://example.com")));
+    }
+}
 
 #[cfg(test)]
 mod tests {
