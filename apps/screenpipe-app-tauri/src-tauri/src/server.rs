@@ -343,7 +343,12 @@ async fn handle_auth(
     State(state): State<ServerState>,
     Json(payload): Json<AuthPayload>,
 ) -> Result<Json<ApiResponse>, (StatusCode, String)> {
-    info!("received auth data: {:?}", payload);
+    info!(
+        "received auth data: token={}, email={}, user_id={}",
+        if payload.token.is_some() { "present" } else { "absent" },
+        if payload.email.is_some() { "present" } else { "absent" },
+        if payload.user_id.is_some() { "present" } else { "absent" },
+    );
 
     let store = get_store(&state.app_handle, None).unwrap();
 
@@ -354,7 +359,12 @@ async fn handle_auth(
             user_id: payload.user_id.unwrap_or_default(),
         };
 
-        info!("saving auth data: {:?}", auth_data);
+        info!(
+            "saving auth data: user_id_len={}, email_len={}, token_len={}",
+            auth_data.user_id.len(),
+            auth_data.email.len(),
+            auth_data.token.len(),
+        );
 
         store.set("user", serde_json::to_value(Some(auth_data)).unwrap());
     } else {
