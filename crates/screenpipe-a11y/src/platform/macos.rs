@@ -1151,12 +1151,21 @@ fn get_focused_element_context(config: &UiCaptureConfig) -> Option<ElementContex
 // are not thread-safe — calling `[NSPasteboard stringForType:]` from a worker thread
 // races AppKit's internal type-cache invalidation when another app mutates the
 // pasteboard mid-read, segfaulting in `_updateTypeCacheIfNeeded` (seen on macOS 26.x,
-// crash report 57E6EDAB-D2D1-44D3-9BD0-82DCA482DBFF). The queue serializes every
-// pasteboard read through one thread; the `_with_ar_pool` variant wraps each block
-// in an autorelease pool so AppKit's per-call temp objects drain immediately.
+// crash reports 57E6EDAB-D2D1-44D3-9BD0-82DCA482DBFF and 56416840-0903-4FAB-8869-5D471B78335C).
+// The queue serializes every pasteboard read through one thread; the `_with_ar_pool`
+// variant wraps each block in an autorelease pool so AppKit's per-call temp objects
+// drain immediately.
 //
 // We use a private serial queue rather than the main queue so heavy main-thread
 // activity (UI hitches, modal dialogs) can't stall clipboard capture.
+//
+// Even with the serial queue + AR pool, the AppKit cache race can still SIGSEGV when
+// another app (system clipboard manager, paste app, etc.) calls
+// `setData:forType:` at the same instant we're reading. SIGSEGV can't be caught
+// in-process, so we use a dead-man-switch instead: write a marker file before each
+// read, delete after. On startup, if the marker exists, we know the previous run
+// crashed mid-read and disable clipboard capture for this session. The user can
+// re-enable by deleting `~/.screenpipe/clipboard-disabled-after-crash`.
 static CLIPBOARD_QUEUE: std::sync::OnceLock<cidre::arc::R<cidre::dispatch::Queue>> =
     std::sync::OnceLock::new();
 
@@ -1164,8 +1173,55 @@ fn clipboard_queue() -> &'static cidre::dispatch::Queue {
     CLIPBOARD_QUEUE.get_or_init(cidre::dispatch::Queue::serial_with_ar_pool)
 }
 
+const CLIPBOARD_INFLIGHT_FILE: &str = "clipboard-read-inflight";
+const CLIPBOARD_DISABLED_FILE: &str = "clipboard-disabled-after-crash";
+
+static CLIPBOARD_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static CLIPBOARD_CRASH_CHECK: std::sync::Once = std::sync::Once::new();
+
+fn check_clipboard_crash_marker() {
+    CLIPBOARD_CRASH_CHECK.call_once(|| {
+        let dir = screenpipe_core::paths::default_screenpipe_data_dir();
+        let inflight = dir.join(CLIPBOARD_INFLIGHT_FILE);
+        let disabled = dir.join(CLIPBOARD_DISABLED_FILE);
+
+        if disabled.exists() {
+            CLIPBOARD_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                "clipboard capture disabled — prior NSPasteboard crash detected. \
+                 delete {} to re-enable",
+                disabled.display()
+            );
+            // Best-effort cleanup of any stale inflight marker
+            let _ = std::fs::remove_file(&inflight);
+        } else if inflight.exists() {
+            // Previous run died mid-clipboard read — promote to permanent disable.
+            CLIPBOARD_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = std::fs::write(&disabled, "");
+            let _ = std::fs::remove_file(&inflight);
+            tracing::warn!(
+                "clipboard capture disabled for this session — previous run crashed \
+                 during NSPasteboard read. delete {} to re-enable",
+                disabled.display()
+            );
+        }
+    });
+}
+
 fn get_clipboard() -> Option<String> {
-    clipboard_queue().sync_once(|| {
+    check_clipboard_crash_marker();
+    if CLIPBOARD_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+
+    let dir = screenpipe_core::paths::default_screenpipe_data_dir();
+    let inflight = dir.join(CLIPBOARD_INFLIGHT_FILE);
+    // Best-effort marker — if write fails (e.g., disk full) we proceed; the worst
+    // case is we don't detect a crash next startup.
+    let _ = std::fs::write(&inflight, std::process::id().to_string());
+
+    let result = clipboard_queue().sync_once(|| {
         let mut clipboard = arboard::Clipboard::new().ok()?;
         let text = clipboard.get_text().ok()?;
         if text.is_empty() {
@@ -1173,7 +1229,10 @@ fn get_clipboard() -> Option<String> {
         } else {
             Some(text)
         }
-    })
+    });
+
+    let _ = std::fs::remove_file(&inflight);
+    result
 }
 
 fn truncate(s: &str, max: usize) -> String {
