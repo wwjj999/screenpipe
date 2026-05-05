@@ -63,7 +63,7 @@ interface TimelineTagToolbarProps {
 }
 
 export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePipes }: TimelineTagToolbarProps) {
-	const { selectionRange, tagFrames, setSelectionRange, tags } = useTimelineSelection();
+	const { selectionRange, tagFrames, removeTagFromFrames, setSelectionRange, tags } = useTimelineSelection();
 	const [customTag, setCustomTag] = useState("");
 	const [radialOpen, setRadialOpen] = useState(false);
 	const radialTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -159,6 +159,27 @@ export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePip
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [isApplying, frameIds, tagFrames, setSelectionRange, quickTags]);
+
+	const handleRemoveTag = useCallback(async (tag: string) => {
+		if (isApplying || frameIds.length === 0) return;
+		setIsApplying(true);
+		try {
+			await removeTagFromFrames(frameIds, tag);
+			posthog.capture("timeline_tag_removed", {
+				tag,
+				frames_count: frameIds.length,
+			});
+		} catch {
+			toast({
+				title: "remove failed",
+				description: `could not remove "${tag}"`,
+				variant: "destructive",
+			});
+		} finally {
+			setIsApplying(false);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [isApplying, frameIds, removeTagFromFrames]);
 
 	const handleCustomSubmit = useCallback((e: React.FormEvent) => {
 		e.preventDefault();
@@ -443,9 +464,17 @@ export function TimelineTagToolbar({ anchorRect, onAskAI, onRunPipe, templatePip
 						{existingTags.map((t) => (
 							<span
 								key={t}
-								className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/25 max-w-[140px] truncate"
+								className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/25 max-w-[140px]"
 							>
-								{t}
+								<span className="truncate">{t}</span>
+								<button
+									onClick={() => handleRemoveTag(t)}
+									disabled={isApplying}
+									className="flex-shrink-0 rounded-full hover:bg-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+									aria-label={`remove tag ${t}`}
+								>
+									<X className="w-2.5 h-2.5" />
+								</button>
 							</span>
 						))}
 					</div>
