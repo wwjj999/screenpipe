@@ -427,6 +427,32 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "update-meeting",
+    description:
+      "Update a meeting's mutable fields (title, attendees, note, app, start/end). Partial: only the fields you pass are written, " +
+      "others stay as-is. Use this to save an AI-generated summary into the meeting note — read the current note first via get-meeting " +
+      "and pass the existing notes plus your additions so you don't overwrite the user's writing. " +
+      "Convention: append AI-generated summary text under a `## Summary` heading at the bottom of the existing note.",
+    annotations: { title: "Update Meeting", readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "Meeting ID" },
+        title: { type: "string", description: "Meeting title" },
+        attendees: { type: "string", description: "Comma-separated attendee names" },
+        note: {
+          type: "string",
+          description:
+            "Full new note body. To preserve existing notes, fetch them first via get-meeting and concatenate before passing.",
+        },
+        meeting_app: { type: "string", description: "App / source name (e.g. 'meet.google.com', 'manual')" },
+        meeting_start: { type: "string", description: "ISO 8601 start time (rarely needed)" },
+        meeting_end: { type: "string", description: "ISO 8601 end time (rarely needed)" },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "keyword-search",
     description:
       "Fast keyword search using FTS index. Faster than search-content for exact keyword matching. " +
@@ -1293,6 +1319,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const meeting = await response.json();
         return {
           content: [{ type: "text", text: JSON.stringify(meeting, null, 2) }],
+        };
+      }
+
+      case "update-meeting": {
+        const meetingId = args.id as number;
+        if (!meetingId) {
+          return { content: [{ type: "text", text: "Error: id is required" }] };
+        }
+        // Build partial body — only forward fields the caller provided.
+        const body: Record<string, unknown> = {};
+        for (const k of ["title", "attendees", "note", "meeting_app", "meeting_start", "meeting_end"] as const) {
+          if (args[k] !== undefined && args[k] !== null) body[k] = args[k];
+        }
+        if (Object.keys(body).length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: pass at least one field to update (title, attendees, note, meeting_app, meeting_start, meeting_end).",
+              },
+            ],
+          };
+        }
+        const response = await fetchAPI(`/meetings/${meetingId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        const updated = await response.json();
+        return {
+          content: [{ type: "text", text: JSON.stringify(updated, null, 2) }],
         };
       }
 
