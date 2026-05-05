@@ -11,6 +11,7 @@ pub mod install;
 pub mod login;
 pub mod mcp;
 pub mod pipe;
+pub mod presets;
 pub mod status;
 pub mod sync;
 pub mod vault;
@@ -684,6 +685,14 @@ pub enum PipeCommand {
         /// Pipe slug (registry identifier)
         slug: String,
     },
+    /// Set which AI preset(s) a pipe uses (overrides inline model/provider)
+    SetPreset {
+        /// Pipe name
+        name: String,
+        /// Preset id(s) — multiple ids form a fallback chain (first works wins)
+        #[arg(required = true, num_args = 1..)]
+        preset: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -693,6 +702,84 @@ pub enum ModelCommand {
         /// Output as JSON
         #[arg(long, default_value_t = false)]
         json: bool,
+    },
+    /// Show one preset's full configuration (api key is masked in human view; raw in --json)
+    Show {
+        /// Preset id
+        id: String,
+        /// Output as JSON (returns raw api key — for scripting / backup)
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Create a new preset
+    Create {
+        /// Preset id (letters, digits, '-', '_'; max 64 chars)
+        id: String,
+        /// Provider: openai | anthropic | native-ollama | custom | screenpipe-cloud
+        #[arg(long)]
+        provider: String,
+        /// Model name (e.g. claude-sonnet-4-5, gpt-4o, llama3.2)
+        #[arg(long)]
+        model: String,
+        /// Base URL (required for native-ollama and custom)
+        #[arg(long)]
+        url: Option<String>,
+        /// API key (required for openai/anthropic; forbidden for ollama/cloud)
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Optional system prompt prepended to pipe bodies
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Max input context characters (1000–2_000_000)
+        #[arg(long)]
+        max_context_chars: Option<i64>,
+        /// Max output tokens (1–200000)
+        #[arg(long)]
+        max_tokens: Option<i64>,
+        /// Make this the default preset for new pipes
+        #[arg(long, default_value_t = false)]
+        set_default: bool,
+    },
+    /// Update fields on an existing preset (only provided flags change)
+    Update {
+        /// Preset id to modify
+        id: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        /// Empty string clears url
+        #[arg(long)]
+        url: Option<String>,
+        /// Empty string clears api key
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Empty string clears prompt
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        max_context_chars: Option<i64>,
+        #[arg(long)]
+        max_tokens: Option<i64>,
+        /// Promote this preset to default (unsets others atomically)
+        #[arg(long, default_value_t = false)]
+        set_default: bool,
+        /// Clear default flag on this preset
+        #[arg(long, default_value_t = false)]
+        unset_default: bool,
+    },
+    /// Mark a preset as the default (atomically unsets others)
+    SetDefault {
+        /// Preset id
+        id: String,
+    },
+    /// Delete a preset; refuses if any pipe references it (use --force to override)
+    Delete {
+        /// Preset id
+        id: String,
+        /// Delete even if pipes reference it (those pipes will fall back to default)
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
 }
 
