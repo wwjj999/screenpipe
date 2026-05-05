@@ -14,7 +14,7 @@ use tracing::warn;
 use crate::speaker::{
     embedding::EmbeddingExtractor,
     embedding_manager::EmbeddingManager,
-    models::{get_or_download_model, invalidate_cached_model, PyannoteModel},
+    models::{get_or_download_model, PyannoteModel},
 };
 
 pub struct SegmentationManager {
@@ -36,7 +36,7 @@ impl SegmentationManager {
         }
 
         let embedding_model_path = match get_or_download_model(PyannoteModel::Embedding).await {
-            Ok(path) => Some(path),
+            Ok(model) => Some(model.path),
             Err(e) => {
                 warn!("embedding model unavailable at startup: {e}");
                 None
@@ -45,7 +45,7 @@ impl SegmentationManager {
 
         let segmentation_model_path = match get_or_download_model(PyannoteModel::Segmentation).await
         {
-            Ok(path) => Some(path),
+            Ok(model) => Some(model.path),
             Err(e) => {
                 warn!("segmentation model unavailable at startup: {e}");
                 None
@@ -64,12 +64,6 @@ impl SegmentationManager {
                         "failed to load embedding model (possibly corrupt): {}. re-downloading",
                         e
                     );
-                    if invalidate_cached_model(&PyannoteModel::Embedding)
-                        .await
-                        .is_err()
-                    {
-                        warn!("failed to invalidate embedding model cache");
-                    }
                     None
                 }
             }
@@ -93,7 +87,8 @@ impl SegmentationManager {
 
         let mut segmentation_model_path = self.segmentation_model_path.lock().await;
         let previous_segmentation_model = segmentation_model_path.clone();
-        if let Ok(path) = get_or_download_model(PyannoteModel::Segmentation).await {
+        if let Ok(path_model) = get_or_download_model(PyannoteModel::Segmentation).await {
+            let path = path_model.path;
             if previous_segmentation_model.as_ref() != Some(&path) {
                 *segmentation_model_path = Some(path);
                 readiness_changed = true;
@@ -103,7 +98,11 @@ impl SegmentationManager {
 
         let mut embedding_model_path = self.embedding_model_path.lock().await;
         let previous_embedding_model = embedding_model_path.clone();
-        let embedding_model = get_or_download_model(PyannoteModel::Embedding).await.ok();
+        let embedding_model: Option<PathBuf> =
+            get_or_download_model(PyannoteModel::Embedding)
+                .await
+                .ok()
+                .map(|model| model.path);
 
         let mut embedding_extractor = self.embedding_extractor.lock().await;
         let had_embedding_extractor = embedding_extractor.is_some();
