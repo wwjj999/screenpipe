@@ -52,9 +52,21 @@ export interface AudioSummary {
   top_transcriptions: AudioSegment[];
 }
 
+export interface EditedFile {
+  /** Absolute filesystem path (macOS via AXDocument). UI renders as a
+   *  clickable file:// link. */
+  path: string;
+  /** How many distinct frames in the window referenced this path. */
+  frame_count: number;
+}
+
 export interface ActivitySummary {
   apps: AppUsage[];
   windows: WindowActivity[];
+  /** Files the user had open in editors during the time range. Empty on
+   *  Windows/Linux until those platforms grow AXDocument-equivalent
+   *  capture, and absent from older API responses (default to []). */
+  edited_files?: EditedFile[];
   audio_summary: AudioSummary;
   total_frames: number;
   time_range: { start: string; end: string };

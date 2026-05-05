@@ -310,6 +310,14 @@ impl TreeWalkerPlatform for WindowsTreeWalker {
             text_content: text_buffer,
             nodes,
             browser_url,
+            // Document path extraction not yet implemented on Windows. UIA
+            // exposes per-element values via the Value pattern but the
+            // window-level "current document" notion is editor-specific
+            // (Notepad++ via the title, VS Code/Electron via no native
+            // signal at all). Rather than ship a fragile per-app heuristic,
+            // we leave this None so callers fall back to window_name and
+            // we can implement it cleanly later.
+            document_path: None,
             timestamp: Utc::now(),
             node_count,
             walk_duration,

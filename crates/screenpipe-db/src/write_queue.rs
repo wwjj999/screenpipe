@@ -104,6 +104,10 @@ pub(crate) enum WriteOp {
         app_name: Option<String>,
         window_name: Option<String>,
         browser_url: Option<String>,
+        /// Absolute filesystem path of the document the focused window is
+        /// editing, when the platform exposes one (macOS via AXDocument).
+        /// Distinct from `browser_url` — this is for editor file paths.
+        document_path: Option<String>,
         focused: bool,
         capture_trigger: Option<String>,
         accessibility_text: Option<String>,
@@ -729,6 +733,7 @@ async fn execute_single_write(
             app_name,
             window_name,
             browser_url,
+            document_path,
             focused,
             capture_trigger,
             accessibility_text,
@@ -748,13 +753,13 @@ async fn execute_single_write(
                     browser_url, app_name, window_name, focused, device_name,
                     snapshot_path, capture_trigger, accessibility_text, text_source,
                     accessibility_tree_json, content_hash, simhash, full_text,
-                    elements_ref_frame_id
+                    elements_ref_frame_id, document_path
                 ) VALUES (
                     NULL, 0, ?1, ?2,
                     ?3, ?4, ?5, ?6, ?7,
                     ?8, ?9, ?10, ?11,
                     ?12, ?13, ?14, ?15,
-                    ?16
+                    ?16, ?17
                 )"#,
             )
             .bind(timestamp)
@@ -773,6 +778,7 @@ async fn execute_single_write(
             .bind(simhash)
             .bind(full_text.as_deref())
             .bind(elements_ref_frame_id)
+            .bind(document_path.as_deref())
             .execute(&mut **conn)
             .await?
             .last_insert_rowid();
@@ -1470,7 +1476,8 @@ mod tests {
                 content_hash INTEGER,
                 simhash INTEGER,
                 full_text TEXT,
-                elements_ref_frame_id INTEGER DEFAULT NULL
+                elements_ref_frame_id INTEGER DEFAULT NULL,
+                document_path TEXT
             )",
         )
         .execute(&pool)
@@ -1732,6 +1739,7 @@ mod tests {
                 app_name: Some("Firefox".to_string()),
                 window_name: Some("GitHub".to_string()),
                 browser_url: Some("https://github.com".to_string()),
+                document_path: None,
                 focused: true,
                 capture_trigger: Some("click".to_string()),
                 accessibility_text: Some("page content".to_string()),

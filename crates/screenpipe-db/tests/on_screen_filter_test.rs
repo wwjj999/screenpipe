@@ -70,7 +70,8 @@ mod tests {
             "/tmp/test.jpg",
             Some(app_name),
             Some("test window"),
-            None,
+            None, // browser_url
+            None, // document_path
             true,
             Some("event"),
             Some(text),
@@ -254,7 +255,8 @@ mod tests {
             "/tmp/test.jpg",
             Some("TestApp"),
             Some("test window"),
-            None,
+            None, // browser_url
+            None, // document_path
             true,
             Some("event"),
             Some("alpha-marker first\nalpha-marker second"),

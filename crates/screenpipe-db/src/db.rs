@@ -464,6 +464,10 @@ impl DatabaseManager {
             ("content_hash", "INTEGER DEFAULT NULL"),
             ("simhash", "INTEGER DEFAULT NULL"),
             ("elements_ref_frame_id", "INTEGER DEFAULT NULL"),
+            // Absolute path of the document open in the focused window, when
+            // platform exposes it (macOS via AXDocument). NULL for non-file
+            // contexts (browsers, OS chrome, terminals).
+            ("document_path", "TEXT DEFAULT NULL"),
         ];
 
         for (col_name, col_type) in missing_columns {
@@ -1887,6 +1891,7 @@ impl DatabaseManager {
             app_name,
             window_name,
             browser_url,
+            None, // document_path — legacy callers don't carry it
             focused,
             capture_trigger,
             accessibility_text,
@@ -2316,6 +2321,13 @@ impl DatabaseManager {
     /// Insert a snapshot frame AND optional OCR text positions in a single transaction.
     /// This avoids opening two separate transactions per capture which doubles pool pressure.
     #[allow(clippy::too_many_arguments)]
+    /// Insert a snapshot frame plus optional OCR text/json.
+    ///
+    /// `document_path` is the absolute filesystem path of the document open in
+    /// the focused window, when the platform exposes one (macOS via
+    /// AXDocument). Distinct from `browser_url` — the latter is for http(s),
+    /// the former for file://.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_snapshot_frame_with_ocr(
         &self,
         device_name: &str,
@@ -2324,6 +2336,7 @@ impl DatabaseManager {
         app_name: Option<&str>,
         window_name: Option<&str>,
         browser_url: Option<&str>,
+        document_path: Option<&str>,
         focused: bool,
         capture_trigger: Option<&str>,
         accessibility_text: Option<&str>,
@@ -2379,6 +2392,7 @@ impl DatabaseManager {
                 app_name: app_name.map(String::from),
                 window_name: window_name.map(String::from),
                 browser_url: browser_url.map(String::from),
+                document_path: document_path.map(String::from),
                 focused,
                 capture_trigger: capture_trigger.map(String::from),
                 accessibility_text: accessibility_text.map(String::from),
@@ -7262,6 +7276,7 @@ LIMIT ? OFFSET ?
             Some(app_name),
             Some(window_name),
             browser_url,
+            None, // document_path — legacy a11y-only test helper
             false,
             None,
             Some(text_content),
@@ -7495,7 +7510,59 @@ LIMIT ? OFFSET ?
         Ok(Some(format!("## typed during meeting\n\n{}", display)))
     }
 
-    /// End a meeting and optionally append typed text to its note.
+    /// Collect distinct absolute file paths the user had open in editors during
+    /// a meeting's time interval (from `frames.document_path`, populated on
+    /// macOS via AXDocument). Returns a markdown bullet list, deduplicated and
+    /// sorted alphabetically — or None when nothing qualifies.
+    ///
+    /// Edge cases handled:
+    /// * `document_path IS NULL` for browsers / OS chrome / terminals →
+    ///   filtered out by the WHERE clause.
+    /// * Same file appears in many frames (typical for the focused doc) →
+    ///   `DISTINCT` dedupes.
+    /// * Empty result → `Ok(None)` so caller skips emitting the section.
+    /// * 200-row cap (so a stray diff with thousands of distinct files
+    ///   doesn't explode the meeting note).
+    pub async fn get_meeting_edited_files(&self, id: i64) -> Result<Option<String>, SqlxError> {
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT meeting_start, meeting_end FROM meetings WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let (start, end) = match row {
+            Some((s, Some(e))) => (s, e),
+            _ => return Ok(None),
+        };
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"SELECT DISTINCT document_path
+               FROM frames
+               WHERE timestamp >= ?1 AND timestamp <= ?2
+                 AND document_path IS NOT NULL
+                 AND document_path != ''
+               ORDER BY document_path ASC
+               LIMIT 200"#,
+        )
+        .bind(&start)
+        .bind(&end)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let bullets: Vec<String> = rows.iter().map(|(p,)| format!("- {}", p)).collect();
+        Ok(Some(format!(
+            "## files edited during meeting\n\n{}",
+            bullets.join("\n")
+        )))
+    }
+
+    /// End a meeting and optionally append auto-collected context (typed
+    /// text + edited files) to its note. Both blocks come from the same
+    /// `[meeting_start, meeting_end]` time window.
     pub async fn end_meeting_with_typed_text(
         &self,
         id: i64,
@@ -7509,22 +7576,38 @@ LIMIT ? OFFSET ?
             return Ok(());
         }
 
-        // Collect typed text
+        // Build the auto-injected suffix from the available signals. Each
+        // signal is independently optional — a meeting where the user only
+        // edited files but typed nothing still gets the files block, and
+        // vice-versa. Order matters for readability: typed text first
+        // (the user's actual prose), files second (context).
+        let mut sections: Vec<String> = Vec::new();
         if let Ok(Some(typed_text)) = self.get_meeting_typed_text(id).await {
-            // Append to existing note
-            let existing_note: Option<(Option<String>,)> =
-                sqlx::query_as("SELECT note FROM meetings WHERE id = ?1")
-                    .bind(id)
-                    .fetch_optional(&self.pool)
-                    .await?;
+            sections.push(typed_text);
+        }
+        if let Ok(Some(files)) = self.get_meeting_edited_files(id).await {
+            sections.push(files);
+        }
+        if sections.is_empty() {
+            return Ok(());
+        }
+        let suffix = sections.join("\n\n");
 
-            let new_note = match existing_note {
-                Some((Some(existing),)) if !existing.is_empty() => {
-                    format!("{}\n\n{}", existing, typed_text)
-                }
-                _ => typed_text,
-            };
+        // Append to existing note
+        let existing_note: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT note FROM meetings WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
 
+        let new_note = match existing_note {
+            Some((Some(existing),)) if !existing.is_empty() => {
+                format!("{}\n\n{}", existing, suffix)
+            }
+            _ => suffix,
+        };
+
+        {
             let mut tx = self.begin_immediate_with_retry().await?;
             sqlx::query("UPDATE meetings SET note = ?1 WHERE id = ?2")
                 .bind(&new_note)

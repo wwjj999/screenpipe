@@ -102,6 +102,7 @@ mod tests {
             text_content: text.to_string(),
             nodes: vec![],
             browser_url: None,
+            document_path: None,
             timestamp: Utc::now(),
             node_count: 1,
             walk_duration: Duration::from_millis(10),

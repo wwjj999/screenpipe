@@ -39,6 +39,96 @@ fn is_browser(app_lower: &str) -> bool {
     BROWSER_NAMES.iter().any(|b| app_lower.contains(b))
 }
 
+/// Extract an absolute file path for the focused window.
+///
+/// Two-stage resolution:
+///   1. **AX (`AXDocument`).** True Cocoa `NSDocument` apps (TextEdit,
+///      Pages, Numbers, Keynote, Xcode, Notes, BBEdit, Sublime, …)
+///      populate `AXDocument` on the focused window with a `file://`
+///      URL. Browsers populate it with `http(s)` — we skip those so
+///      they stay in `browser_url` and don't double-record.
+///   2. **Per-app state files.** Electron editors (Obsidian, and
+///      future additions like VS Code / Cursor / Notion) aren't
+///      `NSDocument` subclasses, so `AXDocument` returns nothing.
+///      For known apps we fall back to a deterministic per-app file
+///      probe (e.g. Obsidian's `obsidian.json` + `workspace.json`).
+///      See [`super::electron_docs`].
+///
+/// Edge cases handled:
+///   - Untitled / unsaved buffers → `AXDocument` returns `None`,
+///     fallback returns `None`. Field stays NULL.
+///   - `AXDocument` is a `file://` URL with percent-encoding
+///     (spaces → `%20`) → decoded into the raw absolute path.
+///   - AX call could in theory block when the inspected app's main
+///     thread is hung; mitigated by the per-call
+///     `set_messaging_timeout_secs` applied at the walk root upstream.
+///
+/// Cost: one extra `AXUIElementCopyAttributeValue` per focused-window
+/// walk (~tens of microseconds typical), plus — only for known
+/// Electron apps — a small JSON file read that's cached behind a
+/// short TTL. Runs after the tree walk so it never inflates the
+/// walk-timeout budget.
+fn extract_document_path(window: &ax::UiElement, app_lower: &str) -> Option<String> {
+    if let Some(raw) = get_string_attr(window, ax::attr::document()) {
+        if let Some(p) = parse_axdocument_value(&raw) {
+            return Some(p);
+        }
+    }
+    super::electron_docs::resolve_electron_doc_path(app_lower)
+}
+
+/// Pure helper: turn a raw `AXDocument` string value into an absolute file path.
+/// Split out from `extract_document_path` so it can be unit-tested without an
+/// `ax::UiElement`. Returns `None` for non-`file://` schemes (browsers, custom
+/// URI handlers) so they don't pollute the document_path column.
+fn parse_axdocument_value(raw: &str) -> Option<String> {
+    if !raw.starts_with("file://") {
+        return None;
+    }
+
+    // Strip scheme. macOS file URLs may contain `%20` for spaces, `%2F`
+    // for legitimate slash-in-filename, non-ASCII via UTF-8 percent-encoded
+    // bytes, etc. We do a tolerant decode: bytes that don't form a valid
+    // UTF-8 sequence after decoding fall back to the raw URL — better than
+    // panicking and better than dropping the whole field.
+    let without_scheme = raw.trim_start_matches("file://");
+
+    // Drop a leading host segment if present (`file:///Users/...` →
+    // `/Users/...`; `file://localhost/Users/...` → `/Users/...`). On macOS
+    // the canonical form is `file:///` (empty host), but we tolerate both.
+    let path_part = if let Some(rest) = without_scheme.strip_prefix("localhost/") {
+        format!("/{}", rest)
+    } else {
+        without_scheme.to_string()
+    };
+
+    Some(percent_decode_path(&path_part).unwrap_or(path_part))
+}
+
+/// Tolerant percent-decoder for file paths. Returns `None` if the decoded
+/// bytes aren't valid UTF-8 (caller falls back to the raw URL string).
+/// Malformed `%xx` (non-hex digit, or truncated near end of input) passes
+/// through verbatim rather than dropping the whole path.
+fn percent_decode_path(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
 /// Extract the browser URL from the focused window using AX APIs.
 /// Tries AXDocument first (works for Safari, Chrome, etc.), then
 /// AppleScript for Arc, then falls back to shallow AXTextField walk.
@@ -384,13 +474,26 @@ impl MacosTreeWalker {
             None
         };
 
+        // Extract document path. Skipped for browsers — their AXDocument
+        // value is the http(s) URL we already pulled into browser_url
+        // above, never a file:// URL. For everything else (editors,
+        // word processors, IDEs, note apps) AXDocument may carry a
+        // file:// URL we can decode into an absolute path; for known
+        // Electron editors we fall through to per-app state-file probes.
+        let document_path = if is_browser(&app_lower) {
+            None
+        } else {
+            extract_document_path(window, &app_lower)
+        };
+
         debug!(
-            "tree walk: app={}, window={}, nodes={}, text_len={}, url={:?}, duration={:?}",
+            "tree walk: app={}, window={}, nodes={}, text_len={}, url={:?}, doc={:?}, duration={:?}",
             app_name,
             window_name,
             state.node_count,
             text_content.len(),
             browser_url,
+            document_path,
             walk_duration
         );
 
@@ -400,6 +503,7 @@ impl MacosTreeWalker {
             text_content,
             nodes: state.nodes,
             browser_url,
+            document_path,
             timestamp: Utc::now(),
             node_count: state.node_count,
             walk_duration,
@@ -1020,6 +1124,90 @@ mod tests {
         assert!(!looks_like_url("hello world"));
         assert!(!looks_like_url(".hidden"));
         assert!(!looks_like_url("abc"));
+    }
+
+    #[test]
+    fn test_percent_decode_path_basic() {
+        assert_eq!(
+            percent_decode_path("/Users/me/Note.md").as_deref(),
+            Some("/Users/me/Note.md")
+        );
+        assert_eq!(
+            percent_decode_path("/Users/me/My%20Note.md").as_deref(),
+            Some("/Users/me/My Note.md")
+        );
+        // %2F mid-path stays as a literal slash byte (legitimate filenames
+        // can contain slashes on HFS+/APFS via path separator escaping).
+        assert_eq!(
+            percent_decode_path("/Users/me/a%2Fb.md").as_deref(),
+            Some("/Users/me/a/b.md")
+        );
+    }
+
+    #[test]
+    fn test_percent_decode_path_passes_through_malformed() {
+        // Non-hex after % → leave verbatim instead of dropping the whole path.
+        assert_eq!(
+            percent_decode_path("/Users/me/%g0.md").as_deref(),
+            Some("/Users/me/%g0.md")
+        );
+        // Truncated trailing % — last 1-2 bytes pass through (no panic).
+        assert_eq!(
+            percent_decode_path("/Users/me/foo%").as_deref(),
+            Some("/Users/me/foo%")
+        );
+        assert_eq!(
+            percent_decode_path("/Users/me/foo%2").as_deref(),
+            Some("/Users/me/foo%2")
+        );
+    }
+
+    #[test]
+    fn test_percent_decode_path_empty_and_unicode() {
+        assert_eq!(percent_decode_path("").as_deref(), Some(""));
+        // %C3%A9 = é in UTF-8 — confirm decode is bytewise so multi-byte
+        // sequences round-trip correctly.
+        assert_eq!(
+            percent_decode_path("/n%C3%A9.md").as_deref(),
+            Some("/né.md")
+        );
+    }
+
+    #[test]
+    fn test_parse_axdocument_value_skips_non_file() {
+        // Browsers and other URL schemes must not show up as document_path.
+        assert_eq!(parse_axdocument_value("https://example.com"), None);
+        assert_eq!(parse_axdocument_value("http://localhost:3000/"), None);
+        assert_eq!(
+            parse_axdocument_value("chrome-extension://abc/popup.html"),
+            None
+        );
+        assert_eq!(parse_axdocument_value(""), None);
+        assert_eq!(parse_axdocument_value("/Users/me/raw-path-no-scheme"), None);
+    }
+
+    #[test]
+    fn test_parse_axdocument_value_file_urls() {
+        // Canonical macOS form: file:///<absolute-path>
+        assert_eq!(
+            parse_axdocument_value("file:///Users/me/Notes/Daily.md").as_deref(),
+            Some("/Users/me/Notes/Daily.md")
+        );
+        // Tolerated: file://localhost/<path> (some older AppKit code paths)
+        assert_eq!(
+            parse_axdocument_value("file://localhost/Users/me/file.txt").as_deref(),
+            Some("/Users/me/file.txt")
+        );
+        // Percent-encoded space common in document names
+        assert_eq!(
+            parse_axdocument_value("file:///Users/me/My%20Doc.md").as_deref(),
+            Some("/Users/me/My Doc.md")
+        );
+        // UTF-8 multibyte percent-encoded
+        assert_eq!(
+            parse_axdocument_value("file:///n%C3%A9.md").as_deref(),
+            Some("/né.md")
+        );
     }
 
     #[test]

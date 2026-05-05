@@ -6846,6 +6846,7 @@ dependencies = [
  "screenpipe-db",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "windows 0.58.0",

@@ -91,9 +91,26 @@ pub struct ActivitySummaryResponse {
     pub windows: Vec<WindowActivity>,
     /// Key text content sampled across the time range (not just the latest frame)
     pub key_texts: Vec<KeyText>,
+    /// Distinct absolute file paths the user had open in editors during the
+    /// time range (sourced from `frames.document_path`, populated on macOS
+    /// via AXDocument). Empty on Windows/Linux until those platforms grow
+    /// equivalent capture. Caller renders these as clickable file links in
+    /// the Receipts panel and feeds them into the AI summary prompt.
+    #[serde(default)]
+    pub edited_files: Vec<EditedFile>,
     pub audio_summary: AudioSummary,
     pub total_frames: i64,
     pub time_range: TimeRange,
+}
+
+#[derive(Serialize, OaSchema)]
+pub struct EditedFile {
+    /// Absolute filesystem path. Forward as-is; the UI renders clickable
+    /// `file://` links. Empty paths are filtered out at SQL time.
+    pub path: String,
+    /// Number of distinct frames that referenced this path, useful as a
+    /// rough "how much time did you spend on this file" signal.
+    pub frame_count: i64,
 }
 
 /// Rich activity summary for a time range.
@@ -214,6 +231,20 @@ pub async fn get_activity_summary(
          ORDER BY LENGTH(at.transcription) DESC LIMIT 20"
     );
 
+    // Distinct files the user had open in editors during the window.
+    // Cap at 50 paths — anything larger is almost certainly noise (e.g.
+    // someone with a 1000-file workspace bouncing around).
+    let edited_files_query = format!(
+        "SELECT document_path AS path, COUNT(*) AS frame_count \
+         FROM frames \
+         WHERE timestamp BETWEEN '{start}' AND '{end}' \
+         AND document_path IS NOT NULL \
+         AND document_path != '' \
+         GROUP BY document_path \
+         ORDER BY frame_count DESC, document_path ASC \
+         LIMIT 50"
+    );
+
     // Execute all queries
     let (
         apps_result,
@@ -221,12 +252,14 @@ pub async fn get_activity_summary(
         texts_result,
         audio_speakers_result,
         audio_transcripts_result,
+        edited_files_result,
     ) = tokio::join!(
         state.db.execute_raw_sql(&apps_query),
         state.db.execute_raw_sql(&windows_query),
         state.db.execute_raw_sql(&texts_query),
         state.db.execute_raw_sql(&audio_speakers_query),
         state.db.execute_raw_sql(&audio_transcripts_query),
+        state.db.execute_raw_sql(&edited_files_query),
     );
 
     // Parse app usage
@@ -335,10 +368,29 @@ pub async fn get_activity_summary(
         error!("activity summary: audio transcripts query failed: {}", e);
     }
 
+    // Parse edited files. Empty Vec when no document_path was captured for
+    // the window (e.g. all-Windows-only days, or browser-only sessions).
+    let mut edited_files: Vec<EditedFile> = Vec::new();
+    if let Ok(rows) = edited_files_result {
+        if let Some(arr) = rows.as_array() {
+            for row in arr {
+                let path = str_field(row, "path");
+                if path.is_empty() {
+                    continue;
+                }
+                let frame_count = row.get("frame_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                edited_files.push(EditedFile { path, frame_count });
+            }
+        }
+    } else if let Err(e) = &edited_files_result {
+        error!("activity summary: edited files query failed: {}", e);
+    }
+
     Ok(JsonResponse(ActivitySummaryResponse {
         apps,
         windows,
         key_texts,
+        edited_files,
         audio_summary: AudioSummary {
             segment_count: total_segments,
             speakers,

@@ -1131,6 +1131,12 @@ impl TreeWalkerPlatform for LinuxTreeWalker {
             text_content,
             nodes: state.nodes,
             browser_url,
+            // Document path extraction not yet implemented on Linux. AT-SPI
+            // has a Document interface and a "DocURL" attribute, but
+            // toolkit coverage is uneven (GTK exposes for some apps, Qt for
+            // others, Electron for almost none). Deferring to a future
+            // pass; meanwhile callers fall back to window_name.
+            document_path: None,
             timestamp: Utc::now(),
             node_count: state.node_count,
             walk_duration,
