@@ -348,8 +348,7 @@ pub async fn get_cpal_device_and_config(
             .iter()
             .max_by(|a, b| {
                 a.max_sample_rate()
-                    .0
-                    .cmp(&b.max_sample_rate().0)
+                    .cmp(&b.max_sample_rate())
                     .then(a.channels().cmp(&b.channels()))
             })
             .ok_or_else(|| anyhow!("No supported output configurations found"))?;
@@ -361,8 +360,7 @@ pub async fn get_cpal_device_and_config(
             .iter()
             .max_by(|a, b| {
                 a.max_sample_rate()
-                    .0
-                    .cmp(&b.max_sample_rate().0)
+                    .cmp(&b.max_sample_rate())
                     .then(a.channels().cmp(&b.channels()))
             })
             .ok_or_else(|| anyhow!("No supported input configurations found"))?;

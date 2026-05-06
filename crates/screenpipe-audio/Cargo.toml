@@ -20,7 +20,7 @@ oasgen = { workspace = true }
 
 # Cross-platform audio capture
 # Using fork with unified cidre version (compatible with sck-rs)
-cpal = { git = "https://github.com/screenpipe/cpal.git", branch = "main" }
+cpal = { git = "https://github.com/divanshu-go/screenpipe-cpal.git", rev = "070548661878f0aac2d1c2ba445ef2d6ed18705f" }
 
 # Wav encoding
 hound = "3.5"

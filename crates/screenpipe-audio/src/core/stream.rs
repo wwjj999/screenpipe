@@ -8,7 +8,7 @@ use anyhow::Result;
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
 use cpal::traits::{DeviceTrait, StreamTrait};
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
-use cpal::StreamError;
+use cpal::Error as CpalError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -58,7 +58,7 @@ impl AudioStreamConfig {
 impl From<&cpal::SupportedStreamConfig> for AudioStreamConfig {
     fn from(config: &cpal::SupportedStreamConfig) -> Self {
         Self {
-            sample_rate: config.sample_rate().0,
+            sample_rate: config.sample_rate(),
             channels: config.channels(),
         }
     }
@@ -408,8 +408,8 @@ fn create_error_callback(
     is_running_weak: std::sync::Weak<AtomicBool>,
     is_disconnected: Arc<AtomicBool>,
     stream_control_tx: mpsc::Sender<StreamControl>,
-) -> impl FnMut(StreamError) + Send + 'static {
-    move |err: StreamError| {
+) -> impl FnMut(CpalError) + Send + 'static {
+    move |err: CpalError| {
         if err
             .to_string()
             .contains("The requested device is no longer available")
@@ -446,12 +446,12 @@ fn build_input_stream(
     config: &cpal::SupportedStreamConfig,
     channels: u16,
     tx: broadcast::Sender<Vec<f32>>,
-    error_callback: impl FnMut(StreamError) + Send + 'static,
+    error_callback: impl FnMut(CpalError) + Send + 'static,
 ) -> Result<cpal::Stream> {
     match config.sample_format() {
         cpal::SampleFormat::F32 => device
             .build_input_stream(
-                &config.config(),
+                config.config(),
                 move |data: &[f32], _: &_| {
                     let mono = audio_to_mono(data, channels);
                     let _ = tx.send(mono);
@@ -462,7 +462,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I16 => device
             .build_input_stream(
-                &config.config(),
+                config.config(),
                 move |data: &[i16], _: &_| {
                     let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
                     let mono = audio_to_mono(&f32_data, channels);
@@ -474,7 +474,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I32 => device
             .build_input_stream(
-                &config.config(),
+                config.config(),
                 move |data: &[i32], _: &_| {
                     let f32_data: Vec<f32> = data
                         .iter()
@@ -489,7 +489,7 @@ fn build_input_stream(
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I8 => device
             .build_input_stream(
-                &config.config(),
+                config.config(),
                 move |data: &[i8], _: &_| {
                     let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 128.0).collect();
                     let mono = audio_to_mono(&f32_data, channels);
