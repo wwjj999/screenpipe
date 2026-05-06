@@ -9,6 +9,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use screenpipe_connect::connections::render_context;
 use screenpipe_core::pipes::PipeManager;
 use screenpipe_secrets::SecretStore;
 use serde::Deserialize;
@@ -195,6 +196,14 @@ pub async fn run_pipe_now(
             }
         }
     }
+
+    // Refresh connections context so the pipe system prompt includes currently
+    // connected integrations (Google Calendar, Gmail, etc.).
+    let screenpipe_dir = mgr.pipes_dir().parent().unwrap_or(mgr.pipes_dir()).to_path_buf();
+    let api_port = mgr.api_port();
+    let ss = secret_store.as_ref().map(|e| e.0.as_ref());
+    let conn_ctx = render_context(&screenpipe_dir, api_port, ss).await;
+    mgr.set_connections_context(conn_ctx);
 
     let result = mgr.start_pipe_background(&id).await;
 

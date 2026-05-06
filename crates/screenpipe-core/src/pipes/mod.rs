@@ -1194,6 +1194,9 @@ pub struct PipeManager {
     token_registry: Option<Arc<dyn permissions::PipeTokenRegistry>>,
     /// Extra context appended to every pipe prompt (e.g. connected integrations).
     extra_context: Option<String>,
+    /// Connected integrations context injected into every pipe *system* prompt.
+    /// Set by the engine layer (which owns the SecretStore) via `set_connections_context`.
+    connections_context: Option<String>,
     /// Local API auth key — injected into pipe subprocesses as SCREENPIPE_LOCAL_API_KEY
     /// so pipes can authenticate to localhost:3030 when API auth is enabled.
     local_api_key: Option<String>,
@@ -1235,6 +1238,7 @@ impl PipeManager {
             )),
             token_registry: None,
             extra_context: None,
+            connections_context: None,
             local_api_key: None,
             fallback_registry: registry,
         }
@@ -1263,6 +1267,18 @@ impl PipeManager {
     /// Clear extra context.
     pub fn clear_extra_context(&mut self) {
         self.extra_context = None;
+    }
+
+    /// Set connected integrations context for the system prompt.
+    /// Called by the engine layer after computing it via `render_context`.
+    pub fn set_connections_context(&mut self, ctx: String) {
+        self.connections_context = if ctx.is_empty() { None } else { Some(ctx) };
+    }
+
+    /// Expose the API port so callers (e.g. engine layer) can pass it to
+    /// `render_context` without needing a separate field.
+    pub fn api_port(&self) -> u16 {
+        self.api_port
     }
 
     /// Set the local API auth key. Injected into pipe subprocesses as
@@ -1824,8 +1840,12 @@ impl PipeManager {
 
         let pipe_dir = self.pipes_dir.clone().join(name);
 
-        let pipe_system_prompt =
-            render_pipe_system_prompt(&body, self.api_port, preset_prompt.as_deref());
+        let pipe_system_prompt = render_pipe_system_prompt(
+            &body,
+            self.api_port,
+            preset_prompt.as_deref(),
+            self.connections_context.as_deref(),
+        );
         let prompt = self.render_prompt(&config, &body, preset_prompt.as_deref());
         let pipe_name = name.to_string();
 
@@ -2300,8 +2320,12 @@ impl PipeManager {
                 .unwrap_or(false);
 
             // Build prompt with context header
-            let pipe_system_prompt =
-                render_pipe_system_prompt(&body, self.api_port, preset_prompt.as_deref());
+            let pipe_system_prompt = render_pipe_system_prompt(
+                &body,
+                self.api_port,
+                preset_prompt.as_deref(),
+                self.connections_context.as_deref(),
+            );
             let prompt = self.render_prompt(&config, &body, preset_prompt.as_deref());
 
             // Shared PID — set synchronously by the executor right after spawn
@@ -3049,6 +3073,7 @@ impl PipeManager {
         let api_port = self.api_port;
         let token_registry = self.token_registry.clone();
         let extra_context = self.extra_context.clone();
+        let connections_context = self.connections_context.clone();
         let _local_api_key = self.local_api_key.clone();
 
         let handle = tokio::spawn(async move {
@@ -3411,8 +3436,12 @@ impl PipeManager {
 
                     let pipe_dir = pipes_dir.join(name);
 
-                    let pipe_system_prompt =
-                        render_pipe_system_prompt(body, api_port, preset_prompt.as_deref());
+                    let pipe_system_prompt = render_pipe_system_prompt(
+                        body,
+                        api_port,
+                        preset_prompt.as_deref(),
+                        connections_context.as_deref(),
+                    );
                     let prompt = render_prompt_with_port(
                         config,
                         body,
@@ -4018,7 +4047,12 @@ pub fn serialize_pipe(config: &PipeConfig, body: &str) -> Result<String> {
 /// Contains the pipe body (instructions from pipe.md) and the preset system prompt.
 /// These are identical across runs and across turns within a run, making them
 /// ideal for Anthropic prompt caching (90% input cost reduction on cache hits).
-fn render_pipe_system_prompt(body: &str, api_port: u16, system_prompt: Option<&str>) -> String {
+fn render_pipe_system_prompt(
+    body: &str,
+    api_port: u16,
+    system_prompt: Option<&str>,
+    connections_context: Option<&str>,
+) -> String {
     let os = std::env::consts::OS;
     let mut sys = String::new();
 
@@ -4038,6 +4072,13 @@ fn render_pipe_system_prompt(body: &str, api_port: u16, system_prompt: Option<&s
         "CRITICAL: You ARE this pipe. You are already running inside it. NEVER run `screenpipe pipe run` — that would create a recursive duplicate. Execute the task directly using the tools available to you (bash, file I/O, HTTP requests, etc.).\n\nOS: {os}\nOutput directory: ./output/\nScreenpipe API: http://localhost:{api_port}{api_auth_note}\nPrefer bun/TypeScript for scripts. Python may not be installed.\nSend notifications via POST http://localhost:11435/notify with {{\"title\": \"...\", \"body\": \"...\"}}. Body supports markdown. File links MUST use absolute paths (e.g. [View log](/Users/me/file.md)), never relative paths like ./output/file.md — relative paths break the notification link handler.\n\n"
     ));
     sys.push_str(body);
+
+    if let Some(ctx) = connections_context {
+        sys.push_str("\n\n");
+        sys.push_str(ctx);
+        sys.push_str("\n\nConnection write policy: never POST, PUT, or PATCH to a connection proxy unless the pipe body or user explicitly asks you to create, write, or modify something in that service. Read first, write only when clearly instructed.");
+    }
+
     sys
 }
 
@@ -5136,7 +5177,7 @@ mod tests {
         assert!(prompt.contains("Time range:"));
         assert!(prompt.contains("Do the work described above now."));
         // Port / body go into system prompt, not user prompt
-        let sys = render_pipe_system_prompt("body text", 3031, None);
+        let sys = render_pipe_system_prompt("body text", 3031, None, None);
         assert!(sys.contains("http://localhost:3031"));
         assert!(!sys.contains("http://localhost:3030"));
         assert!(sys.contains("body text"));
@@ -5163,7 +5204,7 @@ mod tests {
             privacy_filter: false,
             trigger: None,
         };
-        let sys = render_pipe_system_prompt("hello", 3030, None);
+        let sys = render_pipe_system_prompt("hello", 3030, None, None);
         assert!(sys.contains("http://localhost:3030"));
     }
 
@@ -5188,7 +5229,7 @@ mod tests {
             privacy_filter: false,
             trigger: None,
         };
-        let sys = render_pipe_system_prompt("body text", 3030, Some("You are a helpful assistant"));
+        let sys = render_pipe_system_prompt("body text", 3030, Some("You are a helpful assistant"), None);
         assert!(sys.starts_with("You are a helpful assistant\n\n"));
         assert!(sys.contains("body text"));
         assert!(sys.contains("http://localhost:3030"));
@@ -5215,14 +5256,14 @@ mod tests {
             privacy_filter: false,
             trigger: None,
         };
-        let sys = render_pipe_system_prompt("body text", 3030, None);
+        let sys = render_pipe_system_prompt("body text", 3030, None, None);
         assert!(!sys.contains("System prompt:"));
         assert!(sys.contains("body text"));
     }
 
     #[test]
     fn test_system_prompt_contains_anti_recursion_warning() {
-        let sys = render_pipe_system_prompt("task body", 3030, None);
+        let sys = render_pipe_system_prompt("task body", 3030, None, None);
         assert!(sys.contains("NEVER run `screenpipe pipe run`"));
         assert!(sys.contains("You ARE this pipe"));
     }
