@@ -47,8 +47,13 @@ impl Integration for QuickBooks {
     fn proxy_config(&self) -> Option<&'static ProxyConfig> {
         // {realmId} is resolved from the OAuth token JSON, which is merged into credentials
         // by the proxy handler in screenpipe-engine/src/connections_api.rs.
+        //
+        // NOTE: hosted on `sandbox-quickbooks.api.intuit.com` because our current
+        // Intuit OAuth client is registered on the **Development** tab — Dev tokens
+        // only authenticate against the sandbox environment. When we promote a
+        // Production Intuit app, swap to `quickbooks.api.intuit.com`.
         static CFG: ProxyConfig = ProxyConfig {
-            base_url: "https://quickbooks.api.intuit.com/v3/company/{realmId}",
+            base_url: "https://sandbox-quickbooks.api.intuit.com/v3/company/{realmId}",
             auth: ProxyAuth::Bearer {
                 credential_key: "api_key",
             },
@@ -77,8 +82,9 @@ impl Integration for QuickBooks {
             .as_str()
             .ok_or_else(|| anyhow!("realmId missing — please reconnect QuickBooks Online"))?;
 
+        // Sandbox host — Dev tokens only work here. See proxy_config() comment.
         let url = format!(
-            "https://quickbooks.api.intuit.com/v3/company/{}/companyinfo/{}",
+            "https://sandbox-quickbooks.api.intuit.com/v3/company/{}/companyinfo/{}",
             realm_id, realm_id
         );
 
