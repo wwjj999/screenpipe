@@ -81,10 +81,7 @@ impl Integration for PostHog {
         let project_id = require_str(creds, "project_id")?;
         let host = host_or_default(creds);
         let resp: Value = client
-            .get(format!(
-                "https://{}/api/projects/{}/",
-                host, project_id
-            ))
+            .get(format!("https://{}/api/projects/{}/", host, project_id))
             .bearer_auth(api_key)
             .send()
             .await?

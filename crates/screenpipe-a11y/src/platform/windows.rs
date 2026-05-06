@@ -1384,7 +1384,7 @@ mod tests {
         assert_eq!(0x08, 8); // Win
     }
 
-    fn make_test_state(tx: tokio::sync::mpsc::Sender<UiEvent>, text: &str) -> HookState {
+    fn make_test_state(tx: crossbeam_channel::Sender<UiEvent>, text: &str) -> HookState {
         HookState {
             tx,
             start: std::time::Instant::now(),
@@ -1407,7 +1407,7 @@ mod tests {
 
     #[test]
     fn test_flush_text_buffer() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let (tx, rx) = crossbeam_channel::bounded(64);
         let mut state = make_test_state(tx, "hello world");
 
         // Buffer has content — flush should send a Text event
@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn test_flush_empty_buffer_is_noop() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let (tx, rx) = crossbeam_channel::bounded(64);
         let mut state = make_test_state(tx, "");
 
         flush_text_buffer(&mut state);

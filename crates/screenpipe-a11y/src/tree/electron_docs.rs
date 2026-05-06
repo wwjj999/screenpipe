@@ -490,7 +490,14 @@ mod tests {
     /// This is the regression test for the v2.4.139 ship-bug: the
     /// previous shellout returned None on Cursor's real DB, so this
     /// path silently dropped every editor frame's document_path.
+    ///
+    /// macOS-only: hardcodes `Library/Application Support/...` to
+    /// match what `dirs::config_dir()` returns on macOS. On Linux it
+    /// returns `~/.config` and on Windows `%APPDATA%`, so the test
+    /// scaffolding wouldn't line up. The resolver itself is
+    /// cross-platform — only the fixture layout is OS-specific.
     #[test]
+    #[cfg(target_os = "macos")]
     fn vscode_fork_active_path_against_real_sqlite() {
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp

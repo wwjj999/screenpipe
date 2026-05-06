@@ -785,7 +785,8 @@ mod tests {
             &mut buf,
             &mut nodes,
             &mut url,
-            &None,
+            &None, // monitor_rect
+            &None, // window_rect
             &[],
             &mut false,
         );
@@ -854,7 +855,8 @@ mod tests {
             &mut buf,
             &mut nodes,
             &mut url,
-            &None,
+            &None, // monitor_rect
+            &None, // window_rect
             &[],
             &mut false,
         );
@@ -944,7 +946,8 @@ mod tests {
             &mut buf,
             &mut nodes,
             &mut url,
-            &None,
+            &None, // monitor_rect
+            &None, // window_rect
             &ignored,
             &mut hit,
         );

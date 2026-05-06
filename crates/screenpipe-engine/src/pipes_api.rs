@@ -199,7 +199,11 @@ pub async fn run_pipe_now(
 
     // Refresh connections context so the pipe system prompt includes currently
     // connected integrations (Google Calendar, Gmail, etc.).
-    let screenpipe_dir = mgr.pipes_dir().parent().unwrap_or(mgr.pipes_dir()).to_path_buf();
+    let screenpipe_dir = mgr
+        .pipes_dir()
+        .parent()
+        .unwrap_or(mgr.pipes_dir())
+        .to_path_buf();
     let api_port = mgr.api_port();
     let ss = secret_store.as_ref().map(|e| e.0.as_ref());
     let conn_ctx = render_context(&screenpipe_dir, api_port, ss).await;

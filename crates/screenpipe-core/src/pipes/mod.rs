@@ -5229,7 +5229,8 @@ mod tests {
             privacy_filter: false,
             trigger: None,
         };
-        let sys = render_pipe_system_prompt("body text", 3030, Some("You are a helpful assistant"), None);
+        let sys =
+            render_pipe_system_prompt("body text", 3030, Some("You are a helpful assistant"), None);
         assert!(sys.starts_with("You are a helpful assistant\n\n"));
         assert!(sys.contains("body text"));
         assert!(sys.contains("http://localhost:3030"));
