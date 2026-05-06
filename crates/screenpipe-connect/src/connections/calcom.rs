@@ -15,7 +15,21 @@ use serde_json::{Map, Value};
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://app.cal.com/auth/oauth2/authorize",
     client_id: "e9e319206428a99bfcb2207e51f827c96c1ed24821458a8633356e80632575dd",
-    extra_auth_params: &[("scope", "READ_BOOKING READ_PROFILE")],
+    // Cal.com migrated their scope naming: legacy `READ_BOOKING` /
+    // `READ_PROFILE` are no longer accepted on new OAuth clients
+    // (server rejects with "Requested scope exceeds the client's
+    // registered scopes"). Modern names use the `RESOURCE_VERB`
+    // pattern per https://cal.com/docs/api-reference/v2/oauth.
+    //
+    // The four scopes here match the ones enabled on the production
+    // OAuth client: event types, bookings, availability, profile.
+    // Note: "view availability" in the dashboard maps to
+    // `SCHEDULE_READ`, not `AVAILABILITY_READ` — Cal.com's scope
+    // catalog uses "schedule" as the resource name.
+    extra_auth_params: &[(
+        "scope",
+        "BOOKING_READ PROFILE_READ EVENT_TYPE_READ SCHEDULE_READ",
+    )],
     redirect_uri_override: None,
 };
 
