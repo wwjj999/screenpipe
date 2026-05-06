@@ -1023,38 +1023,61 @@ fn resolve_base_url(
     creds: Option<&Map<String, Value>>,
     oauth_extras: Option<&Value>,
 ) -> Result<String, String> {
-    let mut url = template.to_string();
-    if url.contains('{') {
+    // Substitute placeholders of the form `{key}` or `{key|default}`. Empty
+    // credential values are treated as missing so a blank "host" field falls
+    // through to the integration's default rather than producing `https:///`.
+    fn lookup<'a>(
+        name: &str,
+        creds: Option<&'a Map<String, Value>>,
+        oauth_extras: Option<&'a Value>,
+    ) -> Option<&'a str> {
         if let Some(c) = creds {
-            for (key, value) in c.iter() {
-                if let Some(s) = value.as_str() {
-                    url = url.replace(&format!("{{{}}}", key), s);
+            if let Some(s) = c.get(name).and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    return Some(s);
                 }
             }
         }
-        if url.contains('{') {
+        if !OAUTH_URL_SKIP_FIELDS.contains(&name) {
             if let Some(obj) = oauth_extras.and_then(|v| v.as_object()) {
-                for (key, value) in obj.iter() {
-                    if OAUTH_URL_SKIP_FIELDS.contains(&key.as_str()) {
-                        continue;
-                    }
-                    if let Some(s) = value.as_str() {
-                        url = url.replace(&format!("{{{}}}", key), s);
+                if let Some(s) = obj.get(name).and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        return Some(s);
                     }
                 }
             }
         }
-        // Check for unresolved placeholders
-        if let Some(start) = url.find('{') {
-            let end = url[start..].find('}').unwrap_or(0) + start + 1;
-            let field = &url[start..end];
-            return Err(format!(
-                "unresolved placeholder {} in base_url — credential field missing",
-                field
-            ));
-        }
+        None
     }
-    Ok(url)
+
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let close_rel = after_open
+            .find('}')
+            .ok_or_else(|| format!("unmatched '{{' in base_url: {}", template))?;
+        let inner = &after_open[..close_rel];
+        let (name, default) = match inner.split_once('|') {
+            Some((n, d)) => (n, Some(d)),
+            None => (inner, None),
+        };
+        let value = lookup(name, creds, oauth_extras).map(str::to_owned);
+        match (value, default) {
+            (Some(v), _) => out.push_str(&v),
+            (None, Some(d)) => out.push_str(d),
+            (None, None) => {
+                return Err(format!(
+                    "unresolved placeholder {{{}}} in base_url — credential field missing",
+                    name
+                ));
+            }
+        }
+        rest = &after_open[close_rel + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// Resolve auth from proxy config + stored credentials/OAuth token.
@@ -1899,6 +1922,29 @@ mod tests {
         let result = resolve_base_url("https://api.example.com/{access_token}", None, Some(&oauth));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("{access_token}"));
+    }
+
+    #[test]
+    fn test_resolve_base_url_default_used_when_field_missing() {
+        let creds = Map::new();
+        let result = resolve_base_url("https://{host|us.posthog.com}", Some(&creds), None);
+        assert_eq!(result.unwrap(), "https://us.posthog.com");
+    }
+
+    #[test]
+    fn test_resolve_base_url_default_used_when_field_empty() {
+        let mut creds = Map::new();
+        creds.insert("host".into(), json!(""));
+        let result = resolve_base_url("https://{host|us.posthog.com}", Some(&creds), None);
+        assert_eq!(result.unwrap(), "https://us.posthog.com");
+    }
+
+    #[test]
+    fn test_resolve_base_url_default_overridden_by_value() {
+        let mut creds = Map::new();
+        creds.insert("host".into(), json!("eu.posthog.com"));
+        let result = resolve_base_url("https://{host|us.posthog.com}", Some(&creds), None);
+        assert_eq!(result.unwrap(), "https://eu.posthog.com");
     }
 
     // -- resolve_auth -------------------------------------------------------

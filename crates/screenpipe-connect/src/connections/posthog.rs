@@ -13,7 +13,7 @@ static DEF: IntegrationDef = IntegrationDef {
     name: "PostHog",
     icon: "posthog",
     category: Category::Productivity,
-    description: "Query PostHog analytics — events, insights, cohorts, feature flags. Use the PostHog API at https://{host} with Authorization: Bearer <api_key>. Project-scoped endpoints: GET /api/projects/{project_id}/events/, POST /api/projects/{project_id}/query/. Org endpoints: GET /api/users/@me/.",
+    description: "Query PostHog analytics — events, insights, cohorts, feature flags. Use the PostHog API with Authorization: Bearer <api_key>. Project-scoped endpoints: GET /api/projects/{project_id}/events/, POST /api/projects/{project_id}/query/. Org endpoints: GET /api/users/@me/.",
     fields: &[
         FieldDef {
             key: "api_key",
@@ -31,13 +31,24 @@ static DEF: IntegrationDef = IntegrationDef {
         },
         FieldDef {
             key: "host",
-            label: "Host",
+            label: "Host (leave blank for US Cloud)",
             secret: false,
             placeholder: "us.posthog.com",
             help_url: "https://posthog.com/docs/api#regions",
         },
     ],
 };
+
+const DEFAULT_HOST: &str = "us.posthog.com";
+
+fn host_or_default(creds: &Map<String, Value>) -> &str {
+    creds
+        .get("host")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_HOST)
+}
 
 pub struct PostHog;
 
@@ -48,8 +59,10 @@ impl Integration for PostHog {
     }
 
     fn proxy_config(&self) -> Option<&'static ProxyConfig> {
+        // {host|default} — blank field falls back to us.posthog.com so most
+        // users never have to think about regions; EU / self-hosted override.
         static CFG: ProxyConfig = ProxyConfig {
-            base_url: "https://{host}",
+            base_url: "https://{host|us.posthog.com}",
             auth: ProxyAuth::Bearer {
                 credential_key: "api_key",
             },
@@ -66,7 +79,7 @@ impl Integration for PostHog {
     ) -> Result<String> {
         let api_key = require_str(creds, "api_key")?;
         let project_id = require_str(creds, "project_id")?;
-        let host = require_str(creds, "host")?;
+        let host = host_or_default(creds);
         let resp: Value = client
             .get(format!(
                 "https://{}/api/projects/{}/",
