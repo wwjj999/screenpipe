@@ -47,6 +47,7 @@ pub mod otter;
 pub mod perplexity;
 pub mod pipedrive;
 pub mod pocket;
+pub mod posthog;
 pub mod pushover;
 pub mod quickbooks;
 pub mod resend;
@@ -201,6 +202,7 @@ pub fn all_integrations() -> Vec<Box<dyn Integration>> {
         Box::new(ntfy::Ntfy),
         Box::new(toggl::Toggl),
         Box::new(brex::Brex),
+        Box::new(posthog::PostHog),
         Box::new(clickup::ClickUp),
         Box::new(confluence::Confluence),
         Box::new(salesforce::Salesforce),

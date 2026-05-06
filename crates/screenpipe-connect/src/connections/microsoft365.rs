@@ -46,24 +46,35 @@ static DEF: IntegrationDef = IntegrationDef {
     name: "Microsoft 365",
     icon: "microsoft365",
     category: Category::Productivity,
-    description: "Full Microsoft 365 access via OAuth and Microsoft Graph API (https://graph.microsoft.com/v1.0). \
+    description: "Full Microsoft 365 access via OAuth and Microsoft Graph API. \
         Connected via OAuth — click 'Connect Microsoft 365'. \
-        Works with both personal Microsoft accounts (Outlook.com/Live) and work/school \
-        Azure AD accounts, BUT: Teams endpoints (/me/chats, /me/joinedTeams, channel messages) \
-        require a work/school account — Microsoft silently drops those scopes for personal \
-        accounts and Graph will return 403 on Teams calls. Mail, Calendar, and OneDrive work \
-        on both account types. \
-        Endpoints: \
-        GET /connections/microsoft365/me — signed-in user profile. \
-        GET /connections/microsoft365/me/messages?$top=<n>&$search=\"<query>\" — list/search emails. \
-        GET /connections/microsoft365/me/messages/{id} — read full email. \
-        POST /connections/microsoft365/me/sendMail {\"message\":{\"subject\":\"...\",\"body\":{\"content\":\"...\"},\"toRecipients\":[{\"emailAddress\":{\"address\":\"...\"}}]}} — send email. \
-        GET /connections/microsoft365/me/events?$top=<n>&$orderby=start/dateTime — list calendar events. \
-        POST /connections/microsoft365/me/events {\"subject\":\"...\",\"start\":{\"dateTime\":\"...\",\"timeZone\":\"UTC\"},\"end\":{...}} — create event. \
-        GET /connections/microsoft365/me/drive/root/children — list OneDrive root files. \
-        GET /connections/microsoft365/me/chats — list Teams chats. \
-        GET /connections/microsoft365/me/chats/{chatId}/messages — read Teams DMs. \
-        GET /connections/microsoft365/me/joinedTeams — list joined Teams.",
+        \
+        IMPORTANT — endpoint shape: every Graph call goes through the generic proxy \
+        at /connections/microsoft365/proxy/<graph-path>. Do NOT include the Graph \
+        version (the proxy already targets /v1.0). Example: to fetch messages, hit \
+        GET /connections/microsoft365/proxy/me/messages — NOT /connections/microsoft365/me/messages \
+        and NOT /connections/microsoft365/proxy/v1.0/me/messages. Auth is auto-injected. \
+        \
+        Account types: works with both personal Microsoft accounts (Outlook.com/Live) and \
+        work/school Azure AD accounts. Caveats for personal accounts: \
+          - Teams scopes are silently dropped → /me/chats, /me/joinedTeams, channel messages return 403. \
+          - OneDrive may not be provisioned → /me/drive/* returns 404 'itemNotFound'. \
+          - GET /me sometimes returns Graph's empty 'UnknownError' even when the token is valid; \
+            confirm health by calling /me/mailFolders or /me/messages instead. \
+        Mail, Calendar, and (provisioned) OneDrive work on both account types. \
+        \
+        Endpoints (all prefix with /connections/microsoft365/proxy/): \
+          GET  me — signed-in user profile (see caveat above for personal accounts). \
+          GET  me/mailFolders?$select=displayName,totalItemCount,unreadItemCount&$top=15 — folder list with counts. \
+          GET  me/messages?$top=<n>&$search=\"<query>\"&$select=subject,from,receivedDateTime — list/search emails. \
+          GET  me/messages/{id} — read full email. \
+          POST me/sendMail {\"message\":{\"subject\":\"...\",\"body\":{\"contentType\":\"Text\",\"content\":\"...\"},\"toRecipients\":[{\"emailAddress\":{\"address\":\"...\"}}]}} — send email. \
+          GET  me/events?$top=<n>&$orderby=start/dateTime&$select=subject,start,end,organizer — list calendar events. \
+          POST me/events {\"subject\":\"...\",\"start\":{\"dateTime\":\"...\",\"timeZone\":\"UTC\"},\"end\":{\"dateTime\":\"...\",\"timeZone\":\"UTC\"}} — create event. \
+          GET  me/drive/root/children?$top=<n>&$select=name,size,lastModifiedDateTime — list OneDrive root. \
+          GET  me/chats — list Teams chats (work/school only). \
+          GET  me/chats/{chatId}/messages — read Teams DMs (work/school only). \
+          GET  me/joinedTeams — list joined Teams (work/school only).",
     fields: &[],
 };
 

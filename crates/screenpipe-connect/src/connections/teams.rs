@@ -42,13 +42,19 @@ static DEF: IntegrationDef = IntegrationDef {
         Personal Microsoft accounts (consumer Outlook.com/Live accounts) can't access Teams \
         and will be rejected by the connector. \
         (2) Webhook — paste an Incoming Webhook URL to send messages to a channel without OAuth. \
-        OAuth endpoints (all require a connected Teams account): \
-        GET /connections/teams/me/chats — list all chats (DMs + group chats). \
-        GET /connections/teams/me/chats/{chatId}/messages — read messages in a chat. \
-        POST /connections/teams/me/chats/{chatId}/messages {\"body\":{\"content\":\"...\"}} — send a DM. \
-        GET /connections/teams/me/joinedTeams — list joined Teams. \
-        GET /connections/teams/teams/{teamId}/channels — list channels in a team. \
-        GET /connections/teams/teams/{teamId}/channels/{channelId}/messages — read channel messages. \
+        \
+        IMPORTANT — endpoint shape: every Graph call goes through the generic proxy \
+        at /connections/teams/proxy/<graph-path>. Do NOT include the Graph version \
+        (the proxy already targets /v1.0). Auth is auto-injected. \
+        \
+        OAuth endpoints (all prefix with /connections/teams/proxy/): \
+          GET  me/chats — list all chats (DMs + group chats). \
+          GET  me/chats/{chatId}/messages — read messages in a chat. \
+          POST me/chats/{chatId}/messages {\"body\":{\"content\":\"...\"}} — send a DM. \
+          GET  me/joinedTeams — list joined Teams. \
+          GET  teams/{teamId}/channels — list channels in a team. \
+          GET  teams/{teamId}/channels/{channelId}/messages — read channel messages. \
+        \
         Webhook endpoint (no OAuth): \
         POST to webhook_url with {\"text\": \"your message\"} — send to a Teams channel.",
     fields: &[FieldDef {

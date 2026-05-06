@@ -495,6 +495,28 @@ export function RetentionSettings() {
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="flex items-center gap-3 pt-2">
+            <span className="text-sm text-muted-foreground">
+              {pendingMode === "media"
+                ? "evict media older than"
+                : "delete data older than"}
+            </span>
+            <Select
+              value={retentionDays.toString()}
+              onValueChange={handleRetentionChange}
+            >
+              <SelectTrigger className="w-[120px] h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RETENTION_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>cancel</AlertDialogCancel>
             <AlertDialogAction
