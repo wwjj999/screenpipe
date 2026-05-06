@@ -53,7 +53,10 @@ mod tests {
 
         assert!(result.is_ok(), "Query should succeed");
         let rows = result.unwrap();
-        assert!(!rows.is_empty(), "Should find at least one frame with full_text");
+        assert!(
+            !rows.is_empty(),
+            "Should find at least one frame with full_text"
+        );
         assert_eq!(rows[0].0, "Chrome");
         assert_eq!(rows[0].1, "Test Window");
         assert!(rows[0].2.contains("Sample accessibility text"));
@@ -94,7 +97,10 @@ mod tests {
         assert!(result.is_ok(), "Count query should succeed");
         let rows = result.unwrap();
         assert!(!rows.is_empty(), "Should have at least one result row");
-        assert_eq!(rows[0].0, 1, "Should count exactly one frame with full_text");
+        assert_eq!(
+            rows[0].0, 1,
+            "Should count exactly one frame with full_text"
+        );
     }
 
     /// Verify that the 'accessibility' table doesn't exist anymore

@@ -541,7 +541,7 @@ const AISection = ({
         break;
       case "openai-chatgpt":
         newUrl = "https://api.openai.com/v1";
-        newModel = "gpt-5.4";
+        newModel = "gpt-5.5";
         break;
       case "anthropic":
         newUrl = "https://api.anthropic.com";
