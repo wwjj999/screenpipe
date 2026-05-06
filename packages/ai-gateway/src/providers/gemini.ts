@@ -604,28 +604,46 @@ export class GeminiProvider implements AIProvider {
 		});
 	}
 
+	/**
+	 * Convert a JSON-Schema fragment into Gemini's OpenAPI-style tool schema.
+	 *
+	 * Recurses into `properties` (objects) and `items` (arrays) so nested
+	 * shapes survive the conversion. Gemini *requires* `items` on every
+	 * `ARRAY` property — omitting it returns `400 INVALID_ARGUMENT:
+	 * function_declarations[N].parameters.properties[X].items: missing field`,
+	 * which was Sentry SCREENPIPE-AI-PROXY-9 (4.6k events / 256 users).
+	 *
+	 * Defaults are deliberately permissive (string for unknown leaf types,
+	 * `{type: STRING}` for arrays missing `items`) so we never turn an
+	 * upstream-client schema gap into a hard 400.
+	 */
 	private convertParametersToGeminiSchema(params: any): any {
-		if (!params) return { type: 'OBJECT', properties: {} };
-
-		const converted: any = {
-			type: (params.type || 'object').toUpperCase(),
-		};
-
-		if (params.properties) {
-			converted.properties = {};
-			for (const [key, value] of Object.entries(params.properties as Record<string, any>)) {
-				converted.properties[key] = {
-					type: (value.type || 'string').toUpperCase(),
-					description: value.description || '',
-				};
-				if (value.enum) {
-					converted.properties[key].enum = value.enum;
-				}
-			}
+		if (params === null || params === undefined) {
+			return { type: 'OBJECT', properties: {} };
 		}
 
-		if (params.required && Array.isArray(params.required)) {
-			converted.required = params.required;
+		const rawType = String(params.type || 'object').toLowerCase();
+		const converted: any = { type: rawType.toUpperCase() };
+
+		if (params.description) converted.description = params.description;
+		if (params.enum) converted.enum = params.enum;
+
+		if (rawType === 'object' || params.properties) {
+			converted.type = 'OBJECT';
+			converted.properties = {};
+			const props = (params.properties || {}) as Record<string, any>;
+			for (const [key, value] of Object.entries(props)) {
+				converted.properties[key] = this.convertParametersToGeminiSchema(value);
+			}
+			if (Array.isArray(params.required)) {
+				converted.required = params.required;
+			}
+		} else if (rawType === 'array') {
+			// Gemini rejects ARRAY without `items`. Default to a permissive
+			// string item schema so half-specified upstream tools don't 400.
+			converted.items = params.items
+				? this.convertParametersToGeminiSchema(params.items)
+				: { type: 'STRING' };
 		}
 
 		return converted;
