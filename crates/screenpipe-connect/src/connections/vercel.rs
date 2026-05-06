@@ -9,15 +9,14 @@ use async_trait::async_trait;
 use screenpipe_secrets::SecretStore;
 use serde_json::{Map, Value};
 
-// TODO(maintainer): create a Vercel OAuth integration at
-// https://vercel.com/docs/integrations/create-integration
-// Replace the placeholder below with the real client_id once the app is registered.
-// Register redirect URI: http://localhost:3030/connections/oauth/callback
-// Then add OAUTH_VERCEL_CLIENT_ID + OAUTH_VERCEL_CLIENT_SECRET to the
-// website env vars (website/app/api/oauth/exchange/route.ts already has the entry).
+// Vercel OAuth integration. Client_id is public (it's exposed in the
+// authorize URL the user's browser hits) — the secret lives only as
+// OAUTH_VERCEL_CLIENT_SECRET on the website's Vercel deployment. Token
+// exchange goes through /api/oauth/exchange which already has 'vercel'
+// in its provider map.
 static OAUTH: OAuthConfig = OAuthConfig {
     auth_url: "https://vercel.com/oauth/authorize",
-    client_id: "TODO_REPLACE_WITH_VERCEL_CLIENT_ID",
+    client_id: "oac_RJfAj2Mw6mU1yd6zCGrkGGTX",
     extra_auth_params: &[],
     redirect_uri_override: None,
 };
