@@ -9,7 +9,13 @@
 //! memory content) gets PII redacted before leaving the user's device.
 //!
 //! Design notes:
-//! - One global client (OnceCell); the http pool is reused across requests.
+//! - Tinfoil SDK does AMD SEV-SNP attestation + Sigstore code-provenance
+//!   verification + TLS certificate pinning at first use. This proves the
+//!   enclave is running the exact open-source build at
+//!   github.com/screenpipe/privacy-filter and pins TLS to the attested key,
+//!   so a MITM or compromised CA can't observe unredacted text in transit.
+//! - Lazy async init (tokio OnceCell): the verifying handshake (~1-2s on
+//!   first call) is paid once, then reqwest connection-pools the rest.
 //! - Per-text SHA256 LRU cache. Screen content repeats constantly (chrome
 //!   tabs, IDE panes, the same email thread) — caching typically cuts the
 //!   Tinfoil round-trip count by 5-10× during an active session.
@@ -18,7 +24,9 @@
 //!   enclave saturates around 8 concurrent requests so we don't need
 //!   finer-grained batching yet.
 //! - Fails closed: the caller (search handler) turns any error into an HTTP
-//!   error so unredacted text never slips through silently.
+//!   error so unredacted text never slips through silently. An attestation
+//!   failure (network down, measurement mismatch) therefore blocks the
+//!   filter rather than falling back to plain TLS.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +35,7 @@ use moka::future::Cache;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::OnceCell as AsyncOnceCell;
 
 /// Minimum text length worth sending through the filter. Below this we
 /// assume the text can't contain meaningful PII and skip the round-trip.
@@ -39,12 +48,17 @@ const CACHE_CAPACITY: u64 = 2_000;
 /// deterministic for a given input so TTL only exists to bound memory.
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
-const DEFAULT_URL: &str = "https://pii.screenpipe.containers.tinfoil.dev";
+/// Enclave host pinned to our deployed Tinfoil container.
+const DEFAULT_ENCLAVE: &str = "pii.screenpipe.containers.tinfoil.dev";
+/// GitHub repo whose Sigstore-attested release measurement must match the
+/// running enclave (Step 2/3 of Tinfoil's verification).
+const DEFAULT_REPO: &str = "screenpipe/privacy-filter";
 
 #[derive(Debug)]
 pub enum FilterError {
     Request(reqwest::Error),
     Status(reqwest::StatusCode),
+    Attestation(String),
 }
 
 impl std::fmt::Display for FilterError {
@@ -52,6 +66,7 @@ impl std::fmt::Display for FilterError {
         match self {
             FilterError::Request(e) => write!(f, "privacy filter request failed: {}", e),
             FilterError::Status(s) => write!(f, "privacy filter returned status: {}", s),
+            FilterError::Attestation(e) => write!(f, "privacy filter attestation failed: {}", e),
         }
     }
 }
@@ -76,25 +91,50 @@ struct FilterResponse {
 }
 
 pub struct PrivacyFilter {
-    http: reqwest::Client,
-    url: String,
+    enclave: String,
+    repo: String,
+    /// Built lazily on first `filter()` call so attestation cost (~1-2s
+    /// hardware-attestation + Sigstore + cert-pinning) doesn't fire at
+    /// engine startup for users who never enable PII filtering.
+    client: AsyncOnceCell<tinfoil::Client>,
     cache: Cache<[u8; 32], Arc<String>>,
 }
 
 impl PrivacyFilter {
-    fn new(url: String) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(16)
-            .build()
-            .expect("reqwest client should build with default settings");
-
+    fn new(enclave: String, repo: String) -> Self {
         let cache = Cache::builder()
             .max_capacity(CACHE_CAPACITY)
             .time_to_live(CACHE_TTL)
             .build();
 
-        Self { http, url, cache }
+        Self {
+            enclave,
+            repo,
+            client: AsyncOnceCell::new(),
+            cache,
+        }
+    }
+
+    /// Verify the enclave + return its attested HTTP client. The Tinfoil SDK
+    /// does the AMD SEV-SNP attestation, Sigstore signature check, and
+    /// measurement comparison all inside `Client::new`; we cache the result
+    /// so subsequent calls reuse the verified connection pool.
+    async fn http(&self) -> Result<&reqwest::Client, FilterError> {
+        let client = self
+            .client
+            .get_or_try_init(|| async {
+                // The privacy-filter container itself doesn't enforce a
+                // bearer token (its /filter endpoint is open inside the
+                // attested enclave), so the api_key here is just a
+                // placeholder for the SDK constructor.
+                tinfoil::Client::new(&self.enclave, &self.repo, "")
+                    .await
+                    .map_err(|e| FilterError::Attestation(e.to_string()))
+            })
+            .await?;
+        client
+            .http_client()
+            .map_err(|e| FilterError::Attestation(e.to_string()))
     }
 
     /// Redact a single text. Returns the original unchanged if it's shorter
@@ -112,9 +152,10 @@ impl PrivacyFilter {
             return Ok((*cached).clone());
         }
 
-        let resp = self
-            .http
-            .post(format!("{}/filter", self.url))
+        let http = self.http().await?;
+        let resp = http
+            .post(format!("https://{}/filter", self.enclave))
+            .timeout(Duration::from_secs(5))
             .json(&FilterRequest {
                 text,
                 include_spans: false,
@@ -146,14 +187,19 @@ impl PrivacyFilter {
 
 static INSTANCE: OnceCell<Arc<PrivacyFilter>> = OnceCell::new();
 
-/// Global handle. URL comes from `SCREENPIPE_PRIVACY_FILTER_URL`, defaulting
-/// to the public Tinfoil-hosted enclave.
+/// Global handle. Enclave host + repo come from
+/// `SCREENPIPE_PRIVACY_FILTER_ENCLAVE` / `SCREENPIPE_PRIVACY_FILTER_REPO`,
+/// defaulting to the screenpipe-published enclave + its source repo so that
+/// Tinfoil's measurement comparison ties this client to the exact open
+/// source code at github.com/screenpipe/privacy-filter.
 pub fn global() -> Arc<PrivacyFilter> {
     INSTANCE
         .get_or_init(|| {
-            let url = std::env::var("SCREENPIPE_PRIVACY_FILTER_URL")
-                .unwrap_or_else(|_| DEFAULT_URL.to_string());
-            Arc::new(PrivacyFilter::new(url))
+            let enclave = std::env::var("SCREENPIPE_PRIVACY_FILTER_ENCLAVE")
+                .unwrap_or_else(|_| DEFAULT_ENCLAVE.to_string());
+            let repo = std::env::var("SCREENPIPE_PRIVACY_FILTER_REPO")
+                .unwrap_or_else(|_| DEFAULT_REPO.to_string());
+            Arc::new(PrivacyFilter::new(enclave, repo))
         })
         .clone()
 }
@@ -167,7 +213,11 @@ mod tests {
         // Using a bogus URL — the assertion is that the call never happens
         // for under-threshold input, so it doesn't matter that the URL is
         // unreachable.
-        let f = PrivacyFilter::new("http://127.0.0.1:1/never".to_string());
+        // These tests never reach the network — they exercise the cache /
+        // short-text bypass. The enclave + repo strings are bogus on purpose:
+        // if anything tries to actually attest, the test will fail loud
+        // rather than silently calling out.
+        let f = PrivacyFilter::new("never.invalid".to_string(), "test/never".to_string());
         let out = f.filter("hi").await.unwrap();
         assert_eq!(out, "hi");
     }
@@ -175,7 +225,11 @@ mod tests {
     #[tokio::test]
     async fn cache_returns_same_result_without_network() {
         // Seed the cache by hand and verify we hit it instead of the network.
-        let f = PrivacyFilter::new("http://127.0.0.1:1/never".to_string());
+        // These tests never reach the network — they exercise the cache /
+        // short-text bypass. The enclave + repo strings are bogus on purpose:
+        // if anything tries to actually attest, the test will fail loud
+        // rather than silently calling out.
+        let f = PrivacyFilter::new("never.invalid".to_string(), "test/never".to_string());
         let text = "my email is louis.beaumont@gmail.com and this is long enough to filter";
         let mut hasher = Sha256::new();
         hasher.update(text.as_bytes());
@@ -192,7 +246,11 @@ mod tests {
 
     #[tokio::test]
     async fn batch_preserves_order_and_uses_cache() {
-        let f = PrivacyFilter::new("http://127.0.0.1:1/never".to_string());
+        // These tests never reach the network — they exercise the cache /
+        // short-text bypass. The enclave + repo strings are bogus on purpose:
+        // if anything tries to actually attest, the test will fail loud
+        // rather than silently calling out.
+        let f = PrivacyFilter::new("never.invalid".to_string(), "test/never".to_string());
         // Seed all three results in the cache so no network call fires.
         for (text, redacted) in [
             ("alpha-text-block-one".to_string(), "alpha-cached"),
