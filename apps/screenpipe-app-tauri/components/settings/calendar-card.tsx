@@ -253,10 +253,21 @@ export function CalendarCard({ onConnectionChange }: { onConnectionChange?: () =
                   size="sm"
                   onClick={authDenied ? async () => {
                     setIsAuthorizing(true);
-                    // Re-trigger the OS request first. This forces macOS to
-                    // register screenpipe in Privacy & Security → Calendars
-                    // (even if it was missing from the list), so the user can
-                    // actually toggle access when Settings opens.
+                    // Step 1: clear the stale TCC record. Cross-version cdhash
+                    // / Designated-Requirement drift on the prod bundle leaves
+                    // a "denied" entry that macOS silently rejects future
+                    // requestFullAccessToEventsWithCompletion calls against —
+                    // so the app never re-registers in Privacy → Calendars
+                    // and the pane shows up empty. tccutil reset clears it.
+                    try {
+                      await invoke<string>("calendar_reset_permission");
+                    } catch {
+                      // best-effort — still attempt the request below
+                    }
+                    // Step 2: re-trigger the OS request. With the record gone
+                    // status is now NotDetermined, so this hits a fresh code
+                    // path that registers screenpipe in Privacy → Calendars
+                    // (and shows the native prompt).
                     try {
                       await invoke<string>("calendar_authorize");
                     } catch {
@@ -299,24 +310,15 @@ export function CalendarCard({ onConnectionChange }: { onConnectionChange?: () =
                 </Button>
 
                 {authDenied && (
-                  <div className="space-y-1.5">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Calendar access was denied. Click the button above — it
-                      re-registers screenpipe in{" "}
-                      <span className="font-medium">
-                        Privacy &amp; Security &rarr; Calendars
-                      </span>{" "}
-                      and opens System Settings. Toggle screenpipe ON there,
-                      then come back.
-                    </p>
-                    <p className="text-xs text-muted-foreground/70 leading-relaxed">
-                      Still not showing up? Quit screenpipe, run{" "}
-                      <code className="font-mono bg-muted px-1 rounded text-[10px]">
-                        tccutil reset Calendars screenpi.pe
-                      </code>{" "}
-                      in Terminal, relaunch, then try again.
-                    </p>
-                  </div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Calendar access was denied. Click the button above — it
+                    re-registers screenpipe in{" "}
+                    <span className="font-medium">
+                      Privacy &amp; Security &rarr; Calendars
+                    </span>{" "}
+                    and opens System Settings. Toggle screenpipe ON there,
+                    then come back.
+                  </p>
                 )}
               </div>
             ) : (
