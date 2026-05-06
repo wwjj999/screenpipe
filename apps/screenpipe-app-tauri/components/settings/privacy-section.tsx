@@ -307,6 +307,30 @@ export function PrivacySection() {
     handleSettingsChange({ usePiiRemoval: checked }, true);
   };
 
+  // "AI PII removal" — single user-facing toggle that flips both the
+  // text reconciliation worker AND the image redactor (rfdetr_v8) on
+  // or off together. The technical knobs (destructive vs sibling,
+  // text-only vs image-only) stay CLI-only so the UI stays simple.
+  const aiPiiRemovalEnabled =
+    Boolean(settings.asyncPiiRedaction ?? false) ||
+    Boolean(settings.asyncImagePiiRedaction ?? false);
+
+  const handleAiPiiRemovalChange = (checked: boolean) => {
+    handleSettingsChange(
+      {
+        asyncPiiRedaction: checked,
+        asyncImagePiiRedaction: checked,
+      },
+      true,
+    );
+  };
+
+  // Where the AI workers run — one switch covers both modalities.
+  const piiBackend = (settings.piiBackend as "local" | "tinfoil" | undefined) ?? "local";
+  const handlePiiBackendChange = (next: "local" | "tinfoil") => {
+    handleSettingsChange({ piiBackend: next } as any, true);
+  };
+
   const handleIncognitoToggle = (checked: boolean) => {
     handleSettingsChange({ ignoreIncognitoWindows: checked }, true);
   };
@@ -832,6 +856,69 @@ export function PrivacySection() {
                 onCheckedChange={handlePiiRemovalChange}
               />
             </div>
+          </CardContent>
+        </Card>
+
+        {/* AI PII removal — covers text + images via the async worker */}
+        <Card className="border-border bg-card">
+          <CardContent className="px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <Shield className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div>
+                  <h3 className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                    AI PII removal
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                      Experimental
+                    </span>
+                    <HelpTooltip text="Uses an on-device AI model to detect and remove PII from both screen frames and captured text (names, emails, addresses, secrets, URLs). Downloads a ~100 MB model on first run and uses extra CPU/GPU while it processes captures in the background." />
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Removes PII from text and images. Uses extra resources.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                id="aiPiiRemoval"
+                checked={aiPiiRemovalEnabled}
+                onCheckedChange={handleAiPiiRemovalChange}
+              />
+            </div>
+            {aiPiiRemovalEnabled && (
+              <div className="mt-3 ml-6 space-y-2 border-l-2 border-border pl-3">
+                <p className="text-xs font-medium text-foreground">Where it runs</p>
+                <label className="flex cursor-pointer items-start gap-2 text-xs">
+                  <input
+                    type="radio"
+                    name="piiBackend"
+                    className="mt-0.5"
+                    checked={piiBackend === "local"}
+                    onChange={() => handlePiiBackendChange("local")}
+                  />
+                  <span>
+                    <span className="font-medium text-foreground">Local</span>
+                    <span className="text-muted-foreground">
+                      {" "}— on your device. Strongest privacy. Slower on weak hardware.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2 text-xs">
+                  <input
+                    type="radio"
+                    name="piiBackend"
+                    className="mt-0.5"
+                    checked={piiBackend === "tinfoil"}
+                    onChange={() => handlePiiBackendChange("tinfoil")}
+                  />
+                  <span>
+                    <span className="font-medium text-foreground">Cloud (enclave)</span>
+                    <span className="text-muted-foreground">
+                      {" "}— screenpipe&apos;s confidential-compute enclave. Fast everywhere; your device cryptographically verifies the enclave is running the open-source build before sending anything.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

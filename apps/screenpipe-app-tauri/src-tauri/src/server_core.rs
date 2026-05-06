@@ -472,6 +472,94 @@ impl ServerCore {
             warn!("mdns advertisement failed (non-fatal): {}", e);
         }
 
+        // ── Async PII reconciliation workers (issue #3185 / PR #3188) ─────
+        // Two independent workers — text and image — each gated by its
+        // own toggle. Both off by default; users opt in through
+        // Settings → Privacy → "AI PII removal".
+        //
+        // The single `pii_backend` config flag selects the inner
+        // adapter for BOTH modalities:
+        //   - "local"   → local ONNX (text: stub, image: rfdetr_v8)
+        //   - "tinfoil" → confidential-compute enclave (H200) for both
+        let backend = config.pii_backend.as_str();
+        let use_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
+
+        if config.async_pii_redaction {
+            use screenpipe_redact::adapters::tinfoil::TinfoilRedactor;
+            use screenpipe_redact::pipeline::{Pipeline, PipelineConfig};
+            use screenpipe_redact::worker::{Worker, WorkerConfig, ALL_TARGET_TABLES};
+            use screenpipe_redact::Redactor;
+
+            // Today: regardless of `pii_backend`, the text "AI" step
+            // is the Tinfoil enclave because the local OPF ONNX
+            // export is still landing (see PR description). The flag
+            // is here so flipping the enclave OFF on the local mode
+            // is a one-line change once OnnxRedactor is ready.
+            let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+            info!(
+                "starting async text-PII reconciliation worker \
+                 (backend={backend}, destructive={})",
+                config.async_pii_redaction_destructive
+            );
+            let pipeline = Pipeline::regex_then_ai(ai, PipelineConfig::default());
+            let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
+            let cfg = WorkerConfig {
+                tables: ALL_TARGET_TABLES.to_vec(),
+                destructive: config.async_pii_redaction_destructive,
+                ..Default::default()
+            };
+            let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg).spawn();
+        }
+
+        if config.async_image_pii_redaction {
+            use screenpipe_redact::adapters::rfdetr::{RfdetrConfig, RfdetrRedactor};
+            use screenpipe_redact::adapters::tinfoil_image::TinfoilImageRedactor;
+            use screenpipe_redact::image::worker::{ImageWorker, ImageWorkerConfig};
+            use screenpipe_redact::ImageRedactor;
+
+            let pool = db.pool.clone();
+            let destructive = config.async_image_pii_redaction_destructive;
+            if use_tinfoil {
+                info!(
+                    "starting async image-PII worker (backend=tinfoil, destructive={destructive})"
+                );
+                let detector = Arc::new(TinfoilImageRedactor::from_env())
+                    as Arc<dyn ImageRedactor>;
+                let cfg = ImageWorkerConfig {
+                    destructive,
+                    ..Default::default()
+                };
+                let _ = ImageWorker::new(pool, detector, cfg).spawn();
+            } else {
+                // Local mode: rfdetr_v8 ONNX. First-run downloads
+                // ~108 MB from huggingface.co/screenpipe/pii-image-redactor
+                // and verifies SHA-256 before landing in ~/.screenpipe/models/.
+                tokio::spawn(async move {
+                    match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
+                        Ok(detector) => {
+                            info!(
+                                "starting async image-PII worker (backend=local, destructive={destructive})"
+                            );
+                            let cfg = ImageWorkerConfig {
+                                destructive,
+                                ..Default::default()
+                            };
+                            let detector_arc =
+                                Arc::new(detector) as Arc<dyn ImageRedactor>;
+                            let _ = ImageWorker::new(pool, detector_arc, cfg).spawn();
+                        }
+                        Err(e) => {
+                            warn!(
+                                "image-PII (local) enabled but couldn't load rfdetr_v8 model; \
+                                 skipping: {e}. switch to backend=tinfoil in Settings to use \
+                                 the cloud enclave instead."
+                            );
+                        }
+                    }
+                });
+            }
+        }
+
         Ok(Self {
             db,
             audio_manager,

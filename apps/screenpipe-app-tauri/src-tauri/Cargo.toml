@@ -126,6 +126,11 @@ screenpipe-vault = { path = "../../../crates/screenpipe-vault" }
 screenpipe-connect = { path = "../../../crates/screenpipe-connect" }
 screenpipe-secrets = { path = "../../../crates/screenpipe-secrets" }
 screenpipe-events = { path = "../../../crates/screenpipe-events" }
+# Async PII reconciliation (issue #3185 / PR #3188). `onnx-coreml` is
+# the right execution-provider for Apple Silicon; Windows builds
+# should switch to `onnx-directml` via a build-target override.
+# No CUDA / Vulkan / GPU-vendor SDKs bundled.
+screenpipe-redact = { path = "../../../crates/screenpipe-redact", features = ["onnx-coreml"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-rustls"] }
 image = "0.25.5"
 icalendar = "0.17"
