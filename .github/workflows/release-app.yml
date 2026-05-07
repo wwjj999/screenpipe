@@ -1018,6 +1018,117 @@ jobs:
             fi
           done
 
+      - name: Inject mlx.metallib into Contents/MacOS/ + re-sign (macOS)
+        # MLX's runtime library search looks for mlx.metallib next to the
+        # binary (Contents/MacOS/), not in the app's Resources dir. Tauri's
+        # `bundle.resources` always lands in Contents/Resources/, so we have
+        # to physically copy the file into Contents/MacOS/ ourselves.
+        #
+        # This must happen BEFORE notarization. Adding files inside an already
+        # signed bundle invalidates the cdhash — that was the v2.4.133–149
+        # "screenpipe is damaged" bug, which surfaced as repeated Gatekeeper
+        # popups + the embedded server (port 3030) being killed mid-launch.
+        # The runtime symlink approach we used to do is gone (see main.rs).
+        # Now: copy + re-sign + rebuild DMG so the very first signature
+        # already covers Contents/MacOS/mlx.metallib.
+        #
+        # Only runs for builds that ship parakeet-mlx (currently aarch64).
+        # Skips silently if the resource is missing (placeholder build) or
+        # under 1 MB (download failed in build.rs — empty placeholder).
+        if: matrix.os_type == 'macos'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          BUNDLE_DIR="apps/screenpipe-app-tauri/src-tauri/target/${TARGET}/release/bundle"
+          APP_DIR="${BUNDLE_DIR}/macos"
+
+          # Find the .app bundle Tauri produced
+          shopt -s nullglob
+          apps=( "${APP_DIR}"/*.app )
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "no .app to patch — skipping mlx.metallib inject"
+            exit 0
+          fi
+          APP="${apps[0]}"
+          RES_LIB="${APP}/Contents/Resources/mlx.metallib"
+
+          if [ ! -f "$RES_LIB" ]; then
+            echo "no Contents/Resources/mlx.metallib — non-mlx build, skipping"
+            exit 0
+          fi
+
+          # Empty/placeholder metallib (created by build.rs on non-aarch64 macOS,
+          # or when the GitHub release download failed) — don't bother injecting,
+          # MLX would fail anyway. Real metallib is ~84 MB.
+          SIZE=$(stat -f%z "$RES_LIB")
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "Resources/mlx.metallib is only ${SIZE} bytes (placeholder) — skipping inject"
+            exit 0
+          fi
+
+          echo "=== Injecting mlx.metallib into Contents/MacOS/ (${SIZE} bytes) ==="
+          cp "$RES_LIB" "${APP}/Contents/MacOS/mlx.metallib"
+
+          # Re-unlock the keychain before re-signing — same retry pattern the
+          # build step uses, since codesign needs the cert.
+          BUILD_KC="$HOME/Library/Keychains/build.keychain-db"
+          if [ -f "$BUILD_KC" ]; then
+            security unlock-keychain -p "build_password" "$BUILD_KC"
+            security set-keychain-settings -t 3600 "$BUILD_KC"
+          fi
+
+          # Re-sign the bundle. --deep so all inner binaries stay covered;
+          # --force so the existing signature is replaced. Same identity +
+          # entitlements + hardened-runtime flags Tauri used.
+          codesign --force --deep \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime \
+            --entitlements apps/screenpipe-app-tauri/src-tauri/entitlements.plist \
+            --timestamp \
+            "$APP"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "✅ ${APP##*/} re-signed with mlx.metallib in Contents/MacOS/"
+
+          # Rebuild the DMG so it ships the modified .app. We mount the
+          # original DMG read-write to preserve Tauri's layout (background
+          # image, icon positions), swap the .app inside, then convert back
+          # to UDZO. Avoids re-running tauri's DMG creator (which re-signs).
+          DMG_DIR="${BUNDLE_DIR}/dmg"
+          dmgs=( "${DMG_DIR}"/*.dmg )
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "no DMG produced — skipping DMG patch"
+            exit 0
+          fi
+          DMG="${dmgs[0]}"
+          DMG_RW="${DMG%.dmg}.rw.dmg"
+          MOUNT="/Volumes/screenpipe-mlx-edit-$$"
+
+          echo "=== Patching DMG: ${DMG##*/} ==="
+          hdiutil convert "$DMG" -format UDRW -o "$DMG_RW"
+          mkdir -p "$MOUNT"
+          hdiutil attach "$DMG_RW" -mountpoint "$MOUNT" -nobrowse -noautoopen
+
+          # Replace the .app inside the mounted DMG with the patched one.
+          rm -rf "${MOUNT}/$(basename "$APP")"
+          cp -R "$APP" "${MOUNT}/"
+
+          hdiutil detach "$MOUNT"
+
+          # Re-compress to read-only zlib-level-9 (same as Tauri's default).
+          DMG_NEW="${DMG%.dmg}.new.dmg"
+          hdiutil convert "$DMG_RW" -format UDZO -imagekey zlib-level=9 -o "$DMG_NEW"
+          mv "$DMG_NEW" "$DMG"
+          rm "$DMG_RW"
+
+          # Re-sign the patched DMG so notarization sees a clean cdhash.
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
+          codesign --verify --verbose=2 "$DMG"
+          echo "✅ ${DMG##*/} rebuilt + signed with patched .app"
+
       - name: Clean up signing cert from login keychain (macOS)
         if: matrix.os_type == 'macos' && always()
         shell: bash

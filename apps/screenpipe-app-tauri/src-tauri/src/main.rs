@@ -1272,24 +1272,18 @@ async fn main() {
                 env::set_var("TESSDATA_PREFIX", tessdata_path);
             }
 
-            // Ensure mlx.metallib is discoverable by MLX (parakeet-mlx).
-            // Tauri bundles it in Contents/Resources/ but MLX looks next to the binary
-            // (Contents/MacOS/). Create a symlink so both paths work.
-            #[cfg(target_os = "macos")]
-            {
-                if let Ok(exe) = std::env::current_exe() {
-                    let macos_dir = exe.parent().unwrap_or(std::path::Path::new("."));
-                    let target = macos_dir.join("mlx.metallib");
-                    if !target.exists() {
-                        // Try Contents/Resources/mlx.metallib (Tauri resource)
-                        let resource = macos_dir.parent()
-                            .map(|contents| contents.join("Resources/mlx.metallib"));
-                        if let Some(src) = resource.filter(|p| p.exists()) {
-                            let _ = std::os::unix::fs::symlink(&src, &target);
-                        }
-                    }
-                }
-            }
+            // mlx.metallib is now placed at Contents/MacOS/mlx.metallib at
+            // build time (see "Inject mlx.metallib into Contents/MacOS/" step
+            // in .github/workflows/release-app.yml), then signed as part of
+            // the normal codesign pass.
+            //
+            // Previously this block created a symlink at Contents/MacOS/mlx.metallib
+            // pointing at Contents/Resources/mlx.metallib on first launch. Apple
+            // seals every entry inside Contents/ at signing time — adding even a
+            // symlink at runtime invalidates the cdhash, which on macOS 26.4+
+            // triggers the "screenpipe is damaged" Gatekeeper popup and can
+            // leave the app running while the embedded server (port 3030) is
+            // killed by the system. See incident: feedback-bot 2026-05-07.
 
             // Autostart setup
             let autostart_manager = app.autolaunch();
