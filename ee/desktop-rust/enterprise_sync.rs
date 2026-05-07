@@ -464,6 +464,13 @@ pub async fn run(
 
 /// Sleep for `dur` or return early when shutdown fires. Returns true if
 /// shutdown was signalled (caller should break).
+///
+/// `Sender` dropped (= channel closed) is intentionally **not** treated as a
+/// shutdown signal: in the desktop wiring the spawn site doesn't keep the
+/// `Sender` around (there's no graceful-shutdown protocol — tauri just SIGKILLs
+/// the process on quit), so the channel closes immediately after spawn. If
+/// we honored that as shutdown, the task would exit after one tick. We only
+/// break on an explicit `Sender::send(true)` from a test.
 async fn sleep_or_shutdown(
     dur: Duration,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
@@ -471,8 +478,8 @@ async fn sleep_or_shutdown(
     tokio::select! {
         _ = tokio::time::sleep(dur) => false,
         changed = shutdown.changed() => {
-            // Either Ok(()) with new value or Err (channel closed).
-            changed.is_err() || *shutdown.borrow()
+            // Sender dropped → keep running. Explicit `true` value → shutdown.
+            changed.is_ok() && *shutdown.borrow()
         }
     }
 }
