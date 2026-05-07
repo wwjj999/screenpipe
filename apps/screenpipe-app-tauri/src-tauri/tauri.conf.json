@@ -35,10 +35,10 @@
       "icons/screenpipe-logo-tray-failed.png",
       "icons/screenpipe-logo-tray-black.png"
     ],
-    "resources": [
-      "assets/*",
-      "mlx.metallib"
-    ],
+    "resources": {
+      "assets/": "assets",
+      "mlx.metallib": "../MacOS/mlx.metallib"
+    },
     "macOS": {
       "entitlements": "entitlements.plist",
       "hardenedRuntime": true
