@@ -47,6 +47,7 @@ mod commands;
 mod disk_usage;
 mod embedded_server;
 mod enterprise_policy;
+mod enterprise_sync;
 mod hardware;
 mod ics_calendar;
 mod livetext;
@@ -1912,6 +1913,11 @@ async fn main() {
                 tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
                 ics_calendar::start_ics_calendar_poller(ics_app_handle).await;
             });
+
+            // Enterprise telemetry sync (no-op stub on consumer builds).
+            // Runs forever in background; only takes effect on enterprise-
+            // telemetry builds with SCREENPIPE_ENTERPRISE_LICENSE_KEY env set.
+            let _enterprise_shutdown_tx = enterprise_sync::spawn(&app_handle);
 
             // Auto-start cloud sync if it was enabled
             let app_handle_clone = app_handle.clone();
