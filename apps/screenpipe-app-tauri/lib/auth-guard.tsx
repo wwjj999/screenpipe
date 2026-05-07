@@ -48,7 +48,7 @@ function isScreenpipeApi(url: string): boolean {
 }
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { settings, updateSettings } = useSettings();
+  const { settings, updateSettings, loadUser } = useSettings();
   const tokenRef = useRef(settings.user?.token);
   tokenRef.current = settings.user?.token;
 
@@ -64,20 +64,23 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     const token = tokenRef.current;
     if (!token) return;
 
+    // Re-fetch the full user object instead of just probing the status code.
+    // Without this the locally-cached `user.cloud_subscribed` flag never
+    // changes after the first login — so a user whose Stripe sub lapses
+    // keeps seeing Pro UI in the desktop while the gateway downgrades them
+    // to logged_in tier server-side.
     try {
-      const res = await fetch("https://screenpi.pe/api/user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-
-      if (res.status === 401 || res.status === 403) {
+      await loadUser(token);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      // loadUser throws "failed to verify token: 401 ..." / "403 ..." for
+      // auth failures; treat those as session expiry. Anything else
+      // (network blip, 5xx) is silent — retry on the next interval.
+      if (msg.includes(" 401 ") || msg.includes(" 403 ")) {
         await handleSessionExpired();
       }
-    } catch {
-      // network error — don't sign out, user might be offline
     }
-  }, [handleSessionExpired]);
+  }, [loadUser, handleSessionExpired]);
 
   useEffect(() => {
     const initial = setTimeout(verifyToken, 5000);
