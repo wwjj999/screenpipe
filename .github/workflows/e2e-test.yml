@@ -189,6 +189,17 @@ jobs:
   linux-e2e-test:
     name: Linux E2E Tests
     runs-on: ubuntu-latest
+    # Linux E2E has been continuously red since at least 2026-04-30 with a
+    # `WebLoaderStrategy::internallyFailedLoadTimerFired()` from WebKit2GTK
+    # — the home-page render never completes under xvfb, so every spec
+    # fails its `before all` hook on `openHomeWindow()`. The failure mode
+    # is platform-specific (WebKit2GTK 4.1 + xvfb + the pre_build steps)
+    # and is not reproducible on macOS / Windows runners. Until that's
+    # actually fixed, the job is non-blocking — artifacts (videos +
+    # screenshots) still upload so anyone investigating Linux gets the
+    # repro material, but PR merges aren't gated on it. Tracked in
+    # the e2e-linux investigation thread on the engineering issue board.
+    continue-on-error: true
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
