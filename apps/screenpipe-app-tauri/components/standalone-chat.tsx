@@ -2042,37 +2042,69 @@ export function StandaloneChat({
   // E2E hook: expose a function to seed a user message into a session.
   // Required by parallel-chat.spec.ts because `ensureAssistantPlaceholder`
   // (added 2026-04-29 in e1f55023d) only creates an assistant bubble when
-  // the last message is `role: "user"`. Without a way to inject a user
-  // message, the test's pure pi_event-faking path can't materialize any
-  // assistant DOM and CI has been red on every PR since.
-  // Production impact: zero — only adds a non-functional reference on
-  // window. Not gated by env so the e2e build (which uses prod Next.js
-  // bundling) can reach it.
+  // the last message in LOCAL React state is `role: "user"`. Without a
+  // way to inject a user message, the test's pure pi_event-faking path
+  // can't materialize any assistant DOM and CI has been red on every PR
+  // since.
+  //
+  // Three places get updated:
+  //   1. Local React state (`setMessages`) — what `ensureAssistantPlaceholder`
+  //      reads via `setMessages(prev => …)`. This is the critical one.
+  //   2. The chat-store via `upsert` — needed because `appendMessage` no-ops
+  //      when the session record doesn't exist yet (a brand-new session
+  //      created by `chat-load-conversation` → `startNewConversation` does
+  //      NOT seed a sessions[id] entry; that only happens on first save
+  //      after agent_end). Without upsert, the seed silently disappears.
+  //   3. `piSessionIdRef.current` — set if the panel hasn't yet caught up
+  //      to the requested session, so `text_delta` handlers (keyed by
+  //      sessionId) route correctly.
+  //
+  // Production impact: zero — only a non-functional reference on `window`,
+  // never read from production code paths.
   useEffect(() => {
     if (typeof window === "undefined") return;
     (window as any).__e2eSeedUserMessage = (sid: string, text: string) => {
       const id = `e2e-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      useChatStore.getState().actions.appendMessage(sid, {
+      const userMsg = {
         id,
-        role: "user",
+        role: "user" as const,
         content: text,
         timestamp: Date.now(),
-      } as any);
-      // If the panel is currently rendering this session, mirror into
-      // local state so the placeholder check in the next text_delta sees
-      // a "user" tail. Production never needs this — sendPiMessage handles
-      // both store + local state in one shot.
-      if (sid === piSessionIdRef.current) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id,
-            role: "user",
-            content: text,
-            timestamp: Date.now(),
-          } as any,
-        ]);
+      };
+
+      // (2) Ensure the session record exists in the store so subsequent
+      // appendMessage / setStreaming / snapshotSession calls actually
+      // mutate something. upsert overwrites if existing, so we read first
+      // and merge messages by hand.
+      const store = useChatStore.getState();
+      const existing = store.sessions[sid];
+      if (!existing) {
+        store.actions.upsert({
+          id: sid,
+          title: "e2e",
+          preview: text.slice(0, 60),
+          status: "idle",
+          messageCount: 1,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          pinned: false,
+          unread: false,
+          messages: [userMsg as any],
+        });
+      } else {
+        store.actions.appendMessage(sid, userMsg as any);
       }
+
+      // (1) Mirror to local React state so `ensureAssistantPlaceholder`
+      // sees the user-tail on the next text_delta. Always do this — the
+      // test only ever seeds for the about-to-stream session, which is
+      // by definition what the panel is rendering.
+      setMessages((prev) => [...prev, userMsg as any]);
+
+      // (3) Force the session ref in case the panel hasn't finished
+      // switching yet. Otherwise text_deltas with this sid would route
+      // to the wrong handler.
+      piSessionIdRef.current = sid;
     };
     return () => {
       delete (window as any).__e2eSeedUserMessage;
