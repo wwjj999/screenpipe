@@ -145,6 +145,39 @@ jobs:
           mkdir -p target/debug/deps || true
           cp crates/screenpipe-screen/tests/testing_OCR.png target/debug/deps/
 
+      # ORT_STRATEGY=system tells ort to LINK against onnxruntime.lib but
+      # does NOT copy onnxruntime*.dll next to the test binary. Without
+      # the DLLs adjacent to the .exe at runtime, the Windows DLL loader
+      # exits with STATUS_DLL_NOT_FOUND (0xc0000135) on the first
+      # ort::api() call — which is exactly what test_process_ocr_task_windows
+      # hits inside accuracy_test. Stage them before any cargo test that
+      # touches ort. Run this once for both --release/--target builds —
+      # cargo test --release --target x86_64-pc-windows-msvc puts test
+      # binaries under target/x86_64-pc-windows-msvc/release/deps/.
+      - name: Stage ONNX Runtime DLLs next to test binary
+        shell: pwsh
+        run: |
+          $src = "${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.19.2/lib"
+          $dst = "${{ github.workspace }}/target/x86_64-pc-windows-msvc/release/deps"
+          if (-not (Test-Path $dst)) {
+            New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          }
+          Get-ChildItem -Path $src -Filter "onnxruntime*.dll" | ForEach-Object {
+            $dest = Join-Path $dst $_.Name
+            try {
+              if ((Test-Path $dest) -and ((Resolve-Path $_.FullName).Path -eq (Resolve-Path $dest).Path)) {
+                Write-Host "skip self-copy: $($_.Name)"
+              } else {
+                Copy-Item -Path $_.FullName -Destination $dest -Force
+              }
+            } catch [System.IO.IOException] {
+              if ($_.Exception.Message -match 'with itself') {
+                Write-Host "skip self-overwrite: $($_.Name)"
+              } else { throw }
+            }
+          }
+          Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | Select-Object Name, Length
+
       - name: Run specific Windows OCR cargo test
         env:
           RUSTFLAGS: "-C link-arg=/LTCG"
