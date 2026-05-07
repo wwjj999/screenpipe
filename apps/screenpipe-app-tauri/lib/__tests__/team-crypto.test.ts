@@ -110,11 +110,21 @@ describe("team-crypto", () => {
       const config = { secret: "data" };
       const encrypted = await encryptConfig(config, key);
 
-      // flip a character in the ciphertext
+      // Flip a character at a fixed offset, but pick a replacement that
+      // is GUARANTEED to differ from the original. Previously this just
+      // wrote 'X' at index 10 — base64 alphabet is ~64 chars so ~1.5% of
+      // runs landed on a string where position 10 was already 'X', the
+      // "tampered" string was identical to the original, decrypt
+      // succeeded, and the test flaked. Picking the opposite-half-of-
+      // alphabet replacement makes the swap deterministic.
+      const original = encrypted.value_encrypted.charAt(10);
+      const replacement = original === "X" ? "Y" : "X";
       const tampered =
         encrypted.value_encrypted.slice(0, 10) +
-        "X" +
+        replacement +
         encrypted.value_encrypted.slice(11);
+      // Sanity: the swap actually changed the string.
+      expect(tampered).not.toBe(encrypted.value_encrypted);
 
       await expect(
         decryptConfig(tampered, encrypted.nonce, key)

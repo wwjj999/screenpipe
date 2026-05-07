@@ -189,19 +189,30 @@ jobs:
   linux-e2e-test:
     name: Linux E2E Tests
     runs-on: ubuntu-latest
-    # Linux E2E has been continuously red since at least 2026-04-30 with a
-    # `WebLoaderStrategy::internallyFailedLoadTimerFired()` from WebKit2GTK
-    # — the home-page render never completes under xvfb, so every spec
-    # fails its `before all` hook on `openHomeWindow()`. The failure mode
-    # is platform-specific (WebKit2GTK 4.1 + xvfb + the pre_build steps)
-    # and is not reproducible on macOS / Windows runners. Until that's
-    # actually fixed, the job is non-blocking — artifacts (videos +
-    # screenshots) still upload so anyone investigating Linux gets the
-    # repro material, but PR merges aren't gated on it. Tracked in
-    # the e2e-linux investigation thread on the engineering issue board.
-    continue-on-error: true
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # WebKit2GTK + xvfb workarounds. Without these, WebKit2GTK 4.1
+      # raises `WebLoaderStrategy::internallyFailedLoadTimerFired()`
+      # during the first navigation and the Tauri webview never
+      # renders the app — `[data-testid="home-page"]` never appears,
+      # every spec then fails its `before all` hook on
+      # openHomeWindow(). The fixes:
+      #
+      # - WEBKIT_DISABLE_DMABUF_RENDERER=1 — DMABuf compositing wants
+      #   a real GPU pipeline; on xvfb the buffer pass-through fails
+      #   silently (timer-fired error above).
+      # - WEBKIT_DISABLE_COMPOSITING_MODE=1 — accelerated compositing
+      #   has no GL backing under xvfb; turning it off forces the
+      #   software renderer that DOES work.
+      # - WEBKIT_FORCE_SANDBOX=0 — the bubblewrap sandbox can't
+      #   open /proc inside the GH Actions container, blocking the
+      #   web process from spawning.
+      # - LIBGL_ALWAYS_SOFTWARE=1 — belt-and-suspenders; ensures
+      #   any residual GL paths use llvmpipe.
+      WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+      WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+      WEBKIT_FORCE_SANDBOX: "0"
+      LIBGL_ALWAYS_SOFTWARE: "1"
     steps:
     - uses: actions/checkout@v4
 
