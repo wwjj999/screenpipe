@@ -40,7 +40,15 @@ describe('Home window', () => {
       }
 
       const el = await $(`[data-testid="${sectionTestId}"]`);
-      const sectionTimeout = id === 'timeline' ? t(20000) : t(5000);
+      // Sections that fetch remote data on mount (Timeline pulls frames,
+      // Pipes pulls the store catalog from screenpi.pe) need a longer
+      // budget than chrome-only sections — observed on Linux runners
+      // under xvfb where the cold network round-trip alone can eat 8-12s.
+      // Pipes was previously 5s × CI multiplier (10s) and reliably
+      // failed the home-window walkthrough on Linux even after the
+      // GLX/Xvfb fix landed (78ba136b5).
+      const sectionTimeout =
+        id === 'timeline' || id === 'pipes' ? t(20000) : t(5000);
       await el.waitForExist({ timeout: sectionTimeout });
 
       const filepath = await saveScreenshot(`home-${id}`);

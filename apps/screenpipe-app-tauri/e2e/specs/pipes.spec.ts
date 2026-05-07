@@ -62,11 +62,15 @@ describe('Pipes: discover → install → play', function () {
 
   it('navigates to Pipes section', async () => {
     const navPipes = await $('[data-testid="nav-pipes"]');
-    await navPipes.waitForExist({ timeout: 10_000 });
+    await navPipes.waitForExist({ timeout: t(10_000) });
     await navPipes.click();
 
+    // Pipes section fetches the remote store catalog from screenpi.pe
+    // on mount — observed 12-15s cold network round-trip on Linux
+    // runners under xvfb. The hard 10s here was reliably failing post
+    // GLX/Xvfb fix (78ba136b5). Use t() so CI gets the 2× multiplier.
     const pipesSection = await $('[data-testid="section-pipes"]');
-    await pipesSection.waitForExist({ timeout: 10_000 });
+    await pipesSection.waitForExist({ timeout: t(20_000) });
 
     const filepath = await saveScreenshot('pipes-section-loaded');
     expect(existsSync(filepath)).toBe(true);
@@ -76,7 +80,7 @@ describe('Pipes: discover → install → play', function () {
 
   it('switches to the Discover tab', async () => {
     const discoverTab = await $('[data-testid="tab-discover"]');
-    await discoverTab.waitForExist({ timeout: 8_000 });
+    await discoverTab.waitForExist({ timeout: t(10_000) });
     await discoverTab.click();
 
     // Wait for at least one install button to appear in the grid
