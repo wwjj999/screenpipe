@@ -210,16 +210,13 @@ pub async fn oauth_connect(
     }
 
     // QuickBooks: fetch the company name to use as the workspace display name.
-    // Uses the sandbox host because our current Intuit OAuth app is registered on
-    // the Development tab — Dev tokens only authenticate against the sandbox.
-    // Swap to `quickbooks.api.intuit.com` when promoting a Production app.
     if integration_id == "quickbooks" {
         if let (Some(realm_id), Some(access_token)) = (
             token_data["realmId"].as_str().map(String::from),
             token_data["access_token"].as_str().map(String::from),
         ) {
             let url = format!(
-                "https://sandbox-quickbooks.api.intuit.com/v3/company/{}/companyinfo/{}",
+                "https://quickbooks.api.intuit.com/v3/company/{}/companyinfo/{}",
                 realm_id, realm_id
             );
             if let Ok(resp) = client
