@@ -150,6 +150,7 @@ impl OwnedWebviewHandle for TauriOwnedHandle {
             let parsed: url::Url = target
                 .parse()
                 .map_err(|e: url::ParseError| format!("invalid url: {e}"))?;
+            inject_cookies_for_url(&self.app, &parsed).await;
             let _ = self.app.emit(NAVIGATE_EVENT, parsed.as_str());
             webview_window
                 .navigate(parsed)
@@ -284,6 +285,16 @@ impl OwnedWebviewHandle for TauriOwnedHandle {
         if !webview_window.is_visible().unwrap_or(false) {
             let _ = webview_window.show();
         }
+
+        // Push the user's real-browser cookies for this host into
+        // WKHTTPCookieStore before issuing the navigate, so the request
+        // ships logged-in. This is the agent's primary path
+        // (POST /connections/browsers/owned-default/eval — see the
+        // OwnedBrowser trait impl in screenpipe-connect); without this
+        // hook the agent always lands on the logged-out version of the
+        // site even though the Tauri-command-driven sidebar restore
+        // path was injecting correctly.
+        inject_cookies_for_url(&self.app, &parsed).await;
 
         let _ = self.app.emit(NAVIGATE_EVENT, parsed.as_str());
         webview_window
@@ -583,23 +594,8 @@ pub async fn owned_browser_navigate(app: AppHandle, url: String) -> Result<(), S
         .parse()
         .map_err(|e: url::ParseError| format!("invalid url: {e}"))?;
 
-    // Inherit the user's logged-in sessions from their real browser.
-    // `cookies_for_host` is cross-platform but currently only returns
-    // non-empty on macOS (Arc / Chrome / Brave / Edge). The injection
-    // step is platform-gated because each webview engine has its own
-    // cookie-store API: macOS WKHTTPCookieStore today; Windows WebView2
-    // ICoreWebView2CookieManager and Linux webkit2gtk to come.
-    // Fail-open everywhere — any error and we navigate without cookies,
-    // same UX as before this hook existed.
-    if let Some(host) = parsed.host_str() {
-        let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
-        if !cookies.is_empty() {
-            #[cfg(target_os = "macos")]
-            inject_cookies_macos(&app, &cookies).await;
-            #[cfg(not(target_os = "macos"))]
-            let _ = (&app, &cookies); // suppress unused warning until inject impls land
-        }
-    }
+    // Inherit the user's logged-in sessions before navigating.
+    inject_cookies_for_url(&app, &parsed).await;
     let _ = app.emit(NAVIGATE_EVENT, parsed.as_str());
     webview_window.navigate(parsed).map_err(|e| e.to_string())
 }
@@ -612,6 +608,38 @@ pub async fn owned_browser_hide(app: AppHandle) -> Result<(), String> {
         .get_webview_window(WEBVIEW_LABEL)
         .ok_or_else(|| "owned-browser not initialized".to_string())?;
     webview_window.hide().map_err(|e| e.to_string())
+}
+
+/// Cross-platform cookie pre-navigate hook. Resolves the URL's host,
+/// reads cookies from every supported real browser via
+/// `owned_browser_cookies::cookies_for_host`, and dispatches them to
+/// the platform's webview cookie-store API. Called from every path
+/// that issues `webview.navigate(...)` against the owned browser:
+/// - the `owned_browser_navigate` Tauri command (frontend sidebar
+///   restoring per-conversation state),
+/// - `TauriOwnedHandle::navigate` (agent's fire-and-forget native
+///   navigate via the connect HTTP API),
+/// - `TauriOwnedHandle::eval` when a target URL is supplied (agent's
+///   eval-with-navigate path).
+/// Fail-open everywhere — any error and we proceed to navigate
+/// without injection.
+async fn inject_cookies_for_url(app: &AppHandle, url: &url::Url) {
+    let Some(host) = url.host_str() else {
+        return;
+    };
+    let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
+    if cookies.is_empty() {
+        return;
+    }
+    info!(
+        host,
+        count = cookies.len(),
+        "owned-browser: injecting cookies before navigate"
+    );
+    #[cfg(target_os = "macos")]
+    inject_cookies_macos(app, &cookies).await;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, &cookies); // until Windows/Linux injectors land
 }
 
 /// macOS only: push a batch of cookies (read from the user's real

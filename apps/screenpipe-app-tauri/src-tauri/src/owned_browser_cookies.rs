@@ -76,7 +76,7 @@ use std::sync::OnceLock;
 
 #[cfg(target_os = "macos")]
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[cfg(target_os = "macos")]
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -172,7 +172,7 @@ async fn cookies_for_host_impl(host: &str) -> Vec<Cookie> {
             match read_cookies(source, &host_owned) {
                 Ok(mut c) => {
                     if !c.is_empty() {
-                        debug!(
+                        info!(
                             source = source.name,
                             count = c.len(),
                             "owned-browser cookies: read"
