@@ -842,7 +842,7 @@ export function SpeakersSection() {
     try {
       const [namedRes, unnamedRes] = await Promise.all([
         localFetch("/speakers/search"),
-        localFetch("/speakers/unnamed?limit=50"),
+        localFetch("/speakers/unnamed?limit=50&offset=0"),
       ]);
       if (namedRes.ok)
         setSpeakers(
@@ -1027,9 +1027,11 @@ export function SpeakersSection() {
     const res = await localFetch("/speakers/merge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // Backend struct is `MergeSpeakersRequest { speaker_to_keep_id, speaker_to_merge_id }`
+      // — NOT speaker_id_to_keep. Mismatch yielded 422 on every merge click.
       body: JSON.stringify({
-        speaker_id_to_keep: keepId,
-        speaker_id_to_merge: mergeId,
+        speaker_to_keep_id: keepId,
+        speaker_to_merge_id: mergeId,
       }),
     });
     if (!res.ok) throw new Error("failed");
@@ -1175,7 +1177,7 @@ export function SpeakersSection() {
               .join("\n");
 
             const prefillData = {
-              context: `here are my current speakers:\n${speakerSummary}\n\nYou have access to the screenpipe API to manage speakers:\n- POST /speakers/update {id, name} to rename\n- POST /speakers/merge {speaker_id_to_keep, speaker_id_to_merge} to merge duplicates\n- POST /speakers/delete {speaker_id} to delete\n- POST /speakers/hallucination {speaker_id} to mark false detections`,
+              context: `here are my current speakers:\n${speakerSummary}\n\nYou have access to the screenpipe API to manage speakers:\n- POST /speakers/update {id, name} to rename\n- POST /speakers/merge {speaker_to_keep_id, speaker_to_merge_id} to merge duplicates\n- POST /speakers/delete {speaker_id} to delete\n- POST /speakers/hallucination {speaker_id} to mark false detections`,
               prompt:
                 "look at my speakers and help me organize them. find likely duplicates to merge, suggest better names for vague ones, and flag any that look like false detections. make the changes directly via the API.",
               autoSend: true,
