@@ -23,7 +23,13 @@ anyhow = "1.0"
 screenpipe-core = { path = "../screenpipe-core" }
 screenpipe-secrets = { path = "../screenpipe-secrets" }
 tracing = { workspace = true }
-russh = { version = "0.57", default-features = false, features = ["ring", "flate2", "rsa"] }
+# NOTE: dropped the `rsa` feature — it pulls `rsa = "0.10.0-rc.12"` which
+# has a `match`-arm type error against the pinned `pkcs8 = 0.11`. Ring
+# already covers Ed25519 and ECDSA SSH keys, which is what every modern
+# host accepts; if a user genuinely needs RSA SSH key support, re-enable
+# this feature and pin `rsa` to a version compatible with the resolved
+# `pkcs8`. v2.4.170 left this broken on a pristine cargo check.
+russh = { version = "0.57", default-features = false, features = ["ring", "flate2"] }
 russh-sftp = "2.1"
 dirs = "6"
 chrono = "0.4"
