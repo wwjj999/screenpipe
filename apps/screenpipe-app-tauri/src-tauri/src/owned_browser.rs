@@ -583,18 +583,21 @@ pub async fn owned_browser_navigate(app: AppHandle, url: String) -> Result<(), S
         .parse()
         .map_err(|e: url::ParseError| format!("invalid url: {e}"))?;
 
-    // Inherit the user's logged-in sessions from their real browser
-    // (currently Arc only) before navigating. Reads cookies for the
-    // target host out of the user's Cookies SQLite, AES-CBC-decrypts
-    // them with the macOS Keychain key, and pushes them into the
-    // shared `WKHTTPCookieStore`. Fails open: if Arc isn't installed,
-    // the Keychain prompt is denied, or decryption errors out, we
-    // navigate without injection — same behavior as before.
-    #[cfg(target_os = "macos")]
+    // Inherit the user's logged-in sessions from their real browser.
+    // `cookies_for_host` is cross-platform but currently only returns
+    // non-empty on macOS (Arc / Chrome / Brave / Edge). The injection
+    // step is platform-gated because each webview engine has its own
+    // cookie-store API: macOS WKHTTPCookieStore today; Windows WebView2
+    // ICoreWebView2CookieManager and Linux webkit2gtk to come.
+    // Fail-open everywhere — any error and we navigate without cookies,
+    // same UX as before this hook existed.
     if let Some(host) = parsed.host_str() {
         let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
         if !cookies.is_empty() {
+            #[cfg(target_os = "macos")]
             inject_cookies_macos(&app, &cookies).await;
+            #[cfg(not(target_os = "macos"))]
+            let _ = (&app, &cookies); // suppress unused warning until inject impls land
         }
     }
     let _ = app.emit(NAVIGATE_EVENT, parsed.as_str());

@@ -55,7 +55,10 @@ mod livetext;
 mod livetext_ffi;
 mod oauth;
 mod owned_browser;
-#[cfg(target_os = "macos")]
+// Cross-platform shape: macOS reads Arc/Chrome/Brave/Edge cookies and
+// injects via WKHTTPCookieStore; other platforms compile to a stub
+// `cookies_for_host` that returns empty until Windows (DPAPI + AES-256-
+// GCM + WebView2) and Linux (libsecret + webkit2gtk) readers land.
 mod owned_browser_cookies;
 mod permission_events;
 mod permissions;
