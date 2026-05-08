@@ -82,7 +82,6 @@ tracing-appender = "0.2.3"
 sha2 = "0.10"
 anyhow = "1.0.71"
 arboard = "3.4"
-thiserror = "1.0"
 
 # System information
 sysinfo = "=0.29.0"

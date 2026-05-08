@@ -171,7 +171,32 @@ jobs:
             if (Test-Path $dest) { Remove-Item -Path $dest -Force }
             [System.IO.File]::Copy($_.FullName, $dest, $true)
           }
-          Get-ChildItem -Path $dst -Filter "onnxruntime*.dll" | ForEach-Object {
+          # ALSO stage VC++ runtime DLLs that onnxruntime.dll links
+          # against. STATUS_DLL_NOT_FOUND on this job (4ea93ee75) was
+          # NOT a missing onnxruntime.dll — the staging above produced
+          # the right files (verified non-zero) and adding the lib dir
+          # to PATH didn't help either. The missing DLL was a
+          # transitive dep: onnxruntime.dll → vcruntime140{,_1}.dll +
+          # msvcp140.dll. They live in C:\Windows\System32 on the
+          # runner, but the Windows DLL loader's default search puts
+          # the .exe's directory FIRST and there's a known case where
+          # a different vcruntime alongside the binary (e.g. shipped
+          # by a build dep) shadows the System32 one with an
+          # incompatible version. release-cli.yml line 397 ships
+          # these alongside screenpipe.exe for the same reason. Belt-
+          # and-suspenders: stage them next to the test binary too.
+          $crtSrc = "C:\Windows\System32"
+          foreach ($crt in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+            $crtPath = Join-Path $crtSrc $crt
+            if (Test-Path $crtPath) {
+              $dest = Join-Path $dst $crt
+              if (Test-Path $dest) { Remove-Item -Path $dest -Force }
+              [System.IO.File]::Copy($crtPath, $dest, $true)
+            } else {
+              Write-Host "WARNING: $crt not in System32 — runner image may have changed"
+            }
+          }
+          Get-ChildItem -Path $dst -Filter "*.dll" | Where-Object { $_.Name -match "(onnxruntime|vcruntime|msvcp)" } | ForEach-Object {
             if ($_.Length -eq 0) {
               throw "Staged DLL is 0 bytes: $($_.Name) — source likely corrupt"
             }
