@@ -1147,32 +1147,30 @@ fn get_focused_element_context(config: &UiCaptureConfig) -> Option<ElementContex
     })
 }
 
-// Dedicated serial queue for all NSPasteboard access. NSPasteboard / NSPasteboardItem
-// are not thread-safe — calling `[NSPasteboard stringForType:]` from a worker thread
-// races AppKit's internal type-cache invalidation when another app mutates the
-// pasteboard mid-read, segfaulting in `_updateTypeCacheIfNeeded` (seen on macOS 26.x,
-// crash reports 57E6EDAB-D2D1-44D3-9BD0-82DCA482DBFF and 56416840-0903-4FAB-8869-5D471B78335C).
-// The queue serializes every pasteboard read through one thread; the `_with_ar_pool`
-// variant wraps each block in an autorelease pool so AppKit's per-call temp objects
-// drain immediately.
+// All NSPasteboard access dispatches to the main thread. NSPasteboard /
+// NSPasteboardItem have undocumented main-thread-only semantics — calling
+// `[NSPasteboard stringForType:]` from any other thread races AppKit's
+// internal type-cache invalidation when another app mutates the pasteboard
+// mid-read, segfaulting in `_updateTypeCacheIfNeeded` (seen on macOS 26.x;
+// crash keys 57E6EDAB-D2D1-44D3-9BD0-82DCA482DBFF, 56416840-0903-4FAB-8869-5D471B78335C,
+// 5D2F76EF-BA4A-46EB-85F3-5126EE0C9B51). Confirmed by the arboard maintainer
+// in 1Password/arboard#218 — even a private serial queue with autorelease
+// pool isn't enough; the only safe place is the main thread, where AppKit's
+// pasteboard observers are already serialized.
 //
-// We use a private serial queue rather than the main queue so heavy main-thread
-// activity (UI hitches, modal dialogs) can't stall clipboard capture.
+// We hop onto the main queue via `dispatch_sync`. The clipboard worker is a
+// dedicated `std::thread` (not a tokio worker), so blocking it for the
+// duration of a sync hop is fine. Main-thread cost is microseconds per read
+// (one `string(forType:)` call); it doesn't compete meaningfully with the
+// tao event loop.
 //
-// Even with the serial queue + AR pool, the AppKit cache race can still SIGSEGV when
-// another app (system clipboard manager, paste app, etc.) calls
-// `setData:forType:` at the same instant we're reading. SIGSEGV can't be caught
-// in-process, so we use a dead-man-switch instead: write a marker file before each
-// read, delete after. On startup, if the marker exists, we know the previous run
-// crashed mid-read and disable clipboard capture for this session. The user can
+// The dead-man-switch below is kept as defense-in-depth: even with main-
+// thread dispatch, a future macOS regression or a bug in AppKit/arboard
+// could still SIGSEGV the read. SIGSEGV can't be caught in-process, so we
+// write a marker file before each read and delete it after. On startup, if
+// the marker exists, we know the previous run crashed mid-read and we
+// disable clipboard capture permanently for this install. The user can
 // re-enable by deleting `~/.screenpipe/clipboard-disabled-after-crash`.
-static CLIPBOARD_QUEUE: std::sync::OnceLock<cidre::arc::R<cidre::dispatch::Queue>> =
-    std::sync::OnceLock::new();
-
-fn clipboard_queue() -> &'static cidre::dispatch::Queue {
-    CLIPBOARD_QUEUE.get_or_init(cidre::dispatch::Queue::serial_with_ar_pool)
-}
-
 const CLIPBOARD_INFLIGHT_FILE: &str = "clipboard-read-inflight";
 const CLIPBOARD_DISABLED_FILE: &str = "clipboard-disabled-after-crash";
 
@@ -1221,7 +1219,10 @@ fn get_clipboard() -> Option<String> {
     // case is we don't detect a crash next startup.
     let _ = std::fs::write(&inflight, std::process::id().to_string());
 
-    let result = clipboard_queue().sync_once(|| {
+    // dispatch_sync onto the main queue — the only thread where NSPasteboard
+    // is documented to behave. AppKit serializes pasteboard observers on
+    // main, so this side-steps the cache-invalidation race entirely.
+    let result = cidre::dispatch::Queue::main().sync_once(|| {
         let mut clipboard = arboard::Clipboard::new().ok()?;
         let text = clipboard.get_text().ok()?;
         if text.is_empty() {
