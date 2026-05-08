@@ -207,6 +207,7 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
         cancelled = true;
       };
     }
+    let unlistenReady: (() => void) | null = null;
     (async () => {
       const conv = await loadConversationFile(conversationId).catch(() => null);
       if (cancelled) return;
@@ -219,7 +220,24 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
         setVisible(true);
         setCollapsed(wasCollapsed);
         setCurrentUrl(url);
-        invoke("owned_browser_navigate", { url }).catch(() => {});
+        // The webview install runs on a background task that retries
+        // until the app's Tauri runtime has booted. On cold start a chat
+        // with a saved `browserState.url` opens fast enough that this
+        // navigate() lands before install finishes — Rust returns
+        // "owned-browser not initialized", we swallow it, and the
+        // browser silently fails to restore. Retry once when Rust emits
+        // `owned-browser:ready` so the saved state survives app quit.
+        const tryNavigate = () =>
+          invoke("owned_browser_navigate", { url }).catch((e) => {
+            const msg = typeof e === "string" ? e : String(e);
+            return msg.includes("not initialized") ? "retry" : null;
+          });
+        const first = await tryNavigate();
+        if (!cancelled && first === "retry") {
+          unlistenReady = await listen("owned-browser:ready", () => {
+            tryNavigate();
+          });
+        }
         // If collapsed, hide the webview right away — pushBounds wouldn't
         // run because the placeholder isn't mounted.
         if (wasCollapsed) invoke("owned_browser_hide").catch(() => {});
@@ -232,6 +250,7 @@ export function BrowserSidebar({ conversationId }: BrowserSidebarProps) {
     })();
     return () => {
       cancelled = true;
+      if (unlistenReady) unlistenReady();
     };
   }, [conversationId]);
 
