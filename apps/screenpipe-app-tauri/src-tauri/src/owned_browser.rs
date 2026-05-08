@@ -375,11 +375,15 @@ pub async fn install(
                 .resizable(false)
                 .skip_taskbar(true)
                 .visible(false)
-                // Always-on-top so the embedded browser stays above the
-                // sidebar's placeholder when both are visible. The frontend
-                // hides the webview (zero size) when it shouldn't be shown,
-                // so this doesn't trap the user.
-                .always_on_top(true)
+                // NOT `always_on_top(true)` — that maps to NSFloatingWindowLevel
+                // on macOS, which sits above every other app's normal-level
+                // windows globally. Result: when screenpipe loses focus to
+                // MT5 / Claude.ai / Discord / etc., the browser stayed on top
+                // of whatever the user just switched to. The placeholder div
+                // is in its own flex column in the chat layout, not stacked
+                // under the chat content, so normal level is enough — host
+                // app focus/hide/minimize now propagate to the browser via
+                // the OS's standard cross-app window ordering.
                 .shadow(false)
                 .inner_size(1.0, 1.0)
                 .position(0.0, 0.0)
@@ -464,6 +468,18 @@ pub async fn owned_browser_set_bounds(
         inner_pos.y
     );
 
+    // Bind owned-browser as a child of the host window. macOS then ties
+    // the two together: parent miniaturize / orderOut / app-deactivate
+    // propagate to the child automatically, and `addChildWindow:ordered:`
+    // ensures the child stays *above* the parent in z-order without
+    // floating-globally above other apps' windows. Replaces the old
+    // `always_on_top: true` approach which caused the browser to sit on
+    // top of MT5 / Claude.ai / etc. when the user switched apps.
+    // Idempotent for same-parent calls; switching parents auto-removes
+    // from the old one (a window can have at most one parent in Cocoa).
+    #[cfg(target_os = "macos")]
+    bind_owned_browser_to_parent(&app, &parent).await?;
+
     webview_window
         .set_position(LogicalPosition::new(screen_x, screen_y))
         .map_err(|e| e.to_string())?;
@@ -471,6 +487,74 @@ pub async fn owned_browser_set_bounds(
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     webview_window.show().map_err(|e| e.to_string())
+}
+
+/// macOS only: make the owned-browser a child of the named host window
+/// via `[NSWindow addChildWindow:ordered:NSWindowAbove]`. Once bound,
+/// the OS propagates parent visibility (orderOut / miniaturize / app
+/// deactivate) to the child for free, and the child stays above its
+/// parent in z-order — but only within the parent's app, not floating
+/// globally over other apps. Cocoa enforces single-parent semantics, so
+/// re-binding to a different parent automatically removes the old one.
+#[cfg(target_os = "macos")]
+async fn bind_owned_browser_to_parent(
+    app: &AppHandle,
+    parent_label: &str,
+) -> Result<(), String> {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+
+    let app_for_main = app.clone();
+    let parent_label = parent_label.to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+    app.run_on_main_thread(move || {
+        let result: Result<(), String> = (|| {
+            // Resolve parent NSWindow* — host can be either an NSPanel
+            // (overlay/window timeline + chat) or a regular WebviewWindow
+            // (settings / home in window mode), so try both lookups.
+            let parent_ptr: *mut Object = if let Ok(panel) =
+                <tauri::AppHandle as tauri_nspanel::ManagerExt<_>>::get_webview_panel(
+                    &app_for_main,
+                    &parent_label,
+                ) {
+                &*panel as *const _ as *mut Object
+            } else if let Some(win) = app_for_main.get_webview_window(&parent_label) {
+                let raw = win
+                    .ns_window()
+                    .map_err(|e| format!("ns_window for {parent_label}: {e}"))?;
+                raw as *mut Object
+            } else {
+                return Err(format!("parent window {parent_label:?} not found"));
+            };
+
+            let child_win = app_for_main
+                .get_webview_window(WEBVIEW_LABEL)
+                .ok_or_else(|| "owned-browser not initialized".to_string())?;
+            let child_ptr: *mut Object = child_win
+                .ns_window()
+                .map_err(|e| format!("ns_window for owned-browser: {e}"))?
+                as *mut Object;
+
+            if parent_ptr.is_null() || child_ptr.is_null() {
+                return Err("null NSWindow pointer".to_string());
+            }
+            if std::ptr::eq(parent_ptr, child_ptr) {
+                return Err("refusing to add window as child of itself".to_string());
+            }
+
+            // NSWindowOrderingMode::NSWindowAbove == 1
+            unsafe {
+                let _: () =
+                    msg_send![parent_ptr, addChildWindow: child_ptr ordered: 1i64];
+            }
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    })
+    .map_err(|e| format!("run_on_main_thread: {e}"))?;
+    rx.await
+        .map_err(|_| "main thread channel closed".to_string())?
 }
 
 /// Navigate the embedded webview to `url`. Used by the agent (via
