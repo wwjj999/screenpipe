@@ -1,5 +1,16 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+
+// Plain JSON-Schema literal — registerTool only stores it for the LLM,
+// no runtime validation, so we don't need @sinclair/typebox here. The
+// extension lives in <project>/.pi/extensions/ where typebox isn't
+// resolvable from pi-agent/node_modules.
+const params = {
+  type: "object",
+  properties: {
+    query: { type: "string", description: "The search query" },
+  },
+  required: ["query"],
+} as any;
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
@@ -7,9 +18,7 @@ export default function (pi: ExtensionAPI) {
     label: "Web Search",
     description:
       "Search the internet using Google Search. Use when the user asks about current events, people, companies, news, documentation, facts, or anything requiring up-to-date information from the web. Returns search results with sources.",
-    parameters: Type.Object({
-      query: Type.String({ description: "The search query" }),
-    }),
+    parameters: params,
 
     async execute(
       toolCallId: string,
