@@ -496,16 +496,25 @@ impl ServerCore {
             // is here so flipping the enclave OFF on the local mode
             // is a one-line change once OnnxRedactor is ready.
             let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+            // Always destructive — the user-facing toggle is labeled
+            // "AI PII removal", so users expect PII to be REMOVED from
+            // the source columns, not duplicated into a sibling.
+            // The non-destructive sibling-write path was only ever
+            // useful for re-redacting with a future model, which is a
+            // dev concern, not a user concern. The destructive flag
+            // in WorkerConfig + the underlying config field are now
+            // unreachable; both will be torn out in a follow-up
+            // commit along with a migration that drops the now-dead
+            // text_redacted / redaction_version columns.
             info!(
                 "starting async text-PII reconciliation worker \
-                 (backend={backend}, destructive={})",
-                config.async_pii_redaction_destructive
+                 (backend={backend}, destructive=true)"
             );
             let pipeline = Pipeline::regex_then_ai(ai, PipelineConfig::default());
             let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
             let cfg = WorkerConfig {
                 tables: ALL_TARGET_TABLES.to_vec(),
-                destructive: config.async_pii_redaction_destructive,
+                destructive: true,
                 ..Default::default()
             };
             let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg).spawn();
@@ -518,7 +527,11 @@ impl ServerCore {
             use screenpipe_redact::ImageRedactor;
 
             let pool = db.pool.clone();
-            let destructive = config.async_image_pii_redaction_destructive;
+            // Same rationale as the text worker above: force destructive
+            // so the toggle's label ("AI PII removal") matches behavior.
+            // The user-facing flag for non-destructive sibling output is
+            // ignored; tear-out + migration in follow-up.
+            let destructive = true;
             if use_tinfoil {
                 info!(
                     "starting async image-PII worker (backend=tinfoil, destructive={destructive})"
