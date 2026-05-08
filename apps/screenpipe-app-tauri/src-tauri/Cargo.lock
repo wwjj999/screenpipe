@@ -2357,7 +2357,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "web-sys",
  "windows 0.62.2",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -9972,7 +9972,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.170"
+version = "2.4.171"
 dependencies = [
  "aes",
  "anyhow",
