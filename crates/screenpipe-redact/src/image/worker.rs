@@ -194,6 +194,34 @@ impl ImageWorker {
             return Ok(Some(FrameRedactionOutcome::default()));
         }
 
+        // `frames.name` can hold either a snapshot JPG path (the
+        // common event-driven path) OR an mp4 chunk path (the legacy
+        // path: db.rs `insert_frame` binds `video_chunks.file_path`
+        // into `frames.name`, see #legacy-mp4-frames). Detection +
+        // redaction expect a still image. If the file is an mp4 (or
+        // anything else our image stack can't decode), `detect` /
+        // `redact_frame` return a Runtime error. Without this branch
+        // we'd retry the row forever and spam logs every poll.
+        // We mark it redacted-zero to skip — the mp4 itself is left
+        // untouched. Per Louis: not handling mp4 redaction yet, just
+        // making sure the worker doesn't break the product.
+        let is_image_path = matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some(ext) if matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "webp" | "bmp"
+            )
+        );
+        if !is_image_path {
+            debug!(
+                frame = id,
+                path = %path.display(),
+                "frames.name is not a still-image path (likely mp4 chunk) — marking redacted to skip"
+            );
+            self.mark_redacted(id, target_version, 0).await?;
+            return Ok(Some(FrameRedactionOutcome::default()));
+        }
+
         let regions = self.redactor.detect(path).await?;
         let outcome = redact_frame(path, &regions, &self.cfg.policy, self.cfg.destructive)
             .map_err(anyhow::Error::from)?;
@@ -323,5 +351,43 @@ mod tests {
         let v: Option<i64> = row.get(1);
         assert!(when.is_some());
         assert_eq!(v, Some(1));
+    }
+
+    /// `frames.name` can hold an mp4 chunk path on the legacy capture
+    /// path (db.rs `insert_frame` binds `video_chunks.file_path` →
+    /// `frames.name`). Worker must skip those instead of dying on
+    /// `image::open`. Regression guard for product-stability path —
+    /// without this the worker infinite-retries every poll.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn marks_mp4_path_redacted_so_it_isnt_re_polled() {
+        let pool = setup().await;
+        // Use a temp .mp4 that actually exists on disk so we hit the
+        // extension-check path (not the missing-file early-out).
+        let dir = tempfile::tempdir().unwrap();
+        let mp4_path = dir.path().join("chunk_001.mp4");
+        std::fs::write(&mp4_path, b"\x00\x00\x00\x18ftypmp42").unwrap();
+        sqlx::query("INSERT INTO frames (timestamp, name) VALUES (datetime('now', '-1 hour'), ?1)")
+            .bind(mp4_path.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let cfg = ImageWorkerConfig::default();
+        let w = ImageWorker::new(pool.clone(), Arc::new(StubRedactor), cfg);
+        let outcome = w.process_one().await.unwrap();
+        assert!(outcome.is_some(), "mp4 row should be marked, not errored");
+        // mp4 must NOT have been touched.
+        assert!(
+            mp4_path.exists(),
+            "mp4 chunk file should be untouched by the redact worker"
+        );
+        let row =
+            sqlx::query("SELECT image_redacted_at, image_redaction_regions FROM frames LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let when: Option<i64> = row.get(0);
+        let regions: Option<i64> = row.get(1);
+        assert!(when.is_some(), "must mark redacted_at to skip");
+        assert_eq!(regions, Some(0), "must record zero regions for mp4 skip");
     }
 }

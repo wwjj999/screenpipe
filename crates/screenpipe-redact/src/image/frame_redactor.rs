@@ -23,7 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
-use image::{DynamicImage, Rgb};
+use image::{DynamicImage, ImageFormat, Rgb};
 
 use crate::image::{ImageRedactionPolicy, ImageRegion};
 use crate::RedactError;
@@ -93,9 +93,58 @@ pub fn redact_frame(
     } else {
         redacted_sibling(image_path)
     };
+    // Atomic write: encode to a sibling tempfile, then rename over
+    // the destination. Concurrent readers (mp4 encoder, video API
+    // serving frames over HTTP) see either the old full file or the
+    // new full file, never a half-written one. Critical in destructive
+    // mode where the destination IS the only copy.
+    //
+    // We must keep the original extension on the tempfile too — `image`
+    // infers format from the path. So `frame.jpg` → `frame.jpg.redact-tmp`
+    // would fail to encode. Instead, use `<stem>.redact-tmp.<ext>`
+    // (e.g. `frame.redact-tmp.jpg`) so the format-inference path keeps
+    // working, then rename to the final destination.
+    let format = ImageFormat::from_path(&output_path).map_err(|e| {
+        RedactError::Runtime(format!(
+            "unrecognized image format for {}: {e}",
+            output_path.display()
+        ))
+    })?;
+    let stem = output_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "frame".into());
+    let ext = output_path
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "jpg".into());
+    let tmp_path = output_path.with_file_name(format!("{stem}.redact-tmp.{ext}"));
+    let tmp_file = std::fs::File::create(&tmp_path)
+        .map_err(|e| RedactError::Runtime(format!("create {}: {e}", tmp_path.display())))?;
+    let mut tmp_writer = std::io::BufWriter::new(tmp_file);
     DynamicImage::ImageRgb8(buf)
-        .save(&output_path)
-        .map_err(|e| RedactError::Runtime(format!("save {}: {e}", output_path.display())))?;
+        .write_to(&mut tmp_writer, format)
+        .map_err(|e| RedactError::Runtime(format!("encode {}: {e}", tmp_path.display())))?;
+    // Make sure bytes hit disk before rename — otherwise a crash between
+    // rename and fsync could leave a zero-length file.
+    use std::io::Write;
+    tmp_writer
+        .flush()
+        .map_err(|e| RedactError::Runtime(format!("flush {}: {e}", tmp_path.display())))?;
+    tmp_writer
+        .into_inner()
+        .map_err(|e| RedactError::Runtime(format!("close {}: {e}", tmp_path.display())))?
+        .sync_all()
+        .map_err(|e| RedactError::Runtime(format!("fsync {}: {e}", tmp_path.display())))?;
+    std::fs::rename(&tmp_path, &output_path).map_err(|e| {
+        // On rename failure, try to clean up the tempfile — best effort.
+        let _ = std::fs::remove_file(&tmp_path);
+        RedactError::Runtime(format!(
+            "rename {} → {}: {e}",
+            tmp_path.display(),
+            output_path.display()
+        ))
+    })?;
 
     Ok(FrameRedactionOutcome {
         regions_redacted: redacted,
