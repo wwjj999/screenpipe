@@ -31,6 +31,15 @@ use crate::Redactor;
 pub use tables::{TargetTable, ALL_TARGET_TABLES};
 
 /// Shared knobs for the worker.
+///
+/// The worker is destructive-only: when it processes a row it overwrites
+/// the source column (`text` / `transcription` / `text_content` /
+/// `accessibility_text`) with the redacted version. The raw secret is
+/// gone after the UPDATE returns — that's the whole point of the
+/// "AI PII removal" toggle in the UI. We do NOT keep a sibling
+/// `text_redacted` column; the duplicate-column approach was a design
+/// dead-end (it meant flipping the toggle on left every secret in
+/// place, just shadowed by a redacted copy).
 #[derive(Clone)]
 pub struct WorkerConfig {
     /// How many rows to redact per database round-trip.
@@ -42,14 +51,6 @@ pub struct WorkerConfig {
     /// Tables to reconcile. Default: all five (ocr, audio, accessibility,
     /// ui_events:keyboard, ui_events:clipboard).
     pub tables: Vec<TargetTable>,
-    /// When `true`, the worker overwrites the source column (`text`,
-    /// `transcription`, `text_content`) with the redacted text in
-    /// addition to populating `text_redacted`. The raw secret is gone
-    /// after the UPDATE — protects at-rest data, but trades the
-    /// ability to re-redact when a better model lands. Default
-    /// `false` (matches issue #3185 spec). Users opt in for the
-    /// stricter at-rest privacy posture.
-    pub destructive: bool,
 }
 
 impl Default for WorkerConfig {
@@ -59,7 +60,6 @@ impl Default for WorkerConfig {
             idle_between_batches: Duration::from_millis(50),
             poll_interval: Duration::from_secs(5),
             tables: ALL_TARGET_TABLES.to_vec(),
-            destructive: false,
         }
     }
 }
@@ -182,17 +182,8 @@ impl Worker {
             );
         }
 
-        let version = self.redactor.version() as i64;
         for (row, out) in rows.iter().zip(outputs.iter()) {
-            tables::write_redacted(
-                &self.pool,
-                table,
-                row.id,
-                &out.redacted,
-                version,
-                self.cfg.destructive,
-            )
-            .await?;
+            tables::write_redacted(&self.pool, table, row.id, &out.redacted).await?;
         }
 
         let n = rows.len() as u32;

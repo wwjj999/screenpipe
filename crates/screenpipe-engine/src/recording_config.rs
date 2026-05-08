@@ -29,22 +29,16 @@ pub struct RecordingConfig {
     pub disable_audio: bool,
     pub disable_vision: bool,
     pub use_pii_removal: bool,
-    /// Async text PII redaction (issue #3185 / PR #3188): runs the
-    /// background reconciliation worker over OCR / transcripts /
-    /// accessibility / ui_events. Off by default.
+    /// Async text PII redaction: runs the background reconciliation
+    /// worker over OCR / transcripts / accessibility / ui_events and
+    /// overwrites the source columns with the redacted text. Off by
+    /// default.
     pub async_pii_redaction: bool,
-    /// When `async_pii_redaction` is on, also overwrite the source
-    /// column with the redacted text (vs. populate a sibling
-    /// `text_redacted` column).
-    pub async_pii_redaction_destructive: bool,
-    /// Async image PII redaction (PR #3188): runs rfdetr_v8 on each
-    /// captured frame and blacks out detected PII regions. Off by
-    /// default. First-run downloads ~108 MB from
-    /// huggingface.co/screenpipe/pii-image-redactor.
+    /// Async image PII redaction: runs rfdetr_v8 on each captured
+    /// frame and blacks out detected PII regions, atomically
+    /// overwriting the source JPG. Off by default. First-run
+    /// downloads ~108 MB from huggingface.co/screenpipe/pii-image-redactor.
     pub async_image_pii_redaction: bool,
-    /// When `async_image_pii_redaction` is on, overwrite the source
-    /// JPG in place (vs. write `<stem>_redacted.<ext>` next to it).
-    pub async_image_pii_redaction_destructive: bool,
     /// "local" or "tinfoil" — flips both async-PII workers between
     /// on-device ONNX and the screenpipe-hosted Tinfoil enclave.
     /// One toggle covers both modalities; the user-facing UI is a
@@ -185,9 +179,7 @@ impl RecordingConfig {
             disable_vision: settings.disable_vision,
             use_pii_removal: settings.use_pii_removal,
             async_pii_redaction: settings.async_pii_redaction,
-            async_pii_redaction_destructive: settings.async_pii_redaction_destructive,
             async_image_pii_redaction: settings.async_image_pii_redaction,
-            async_image_pii_redaction_destructive: settings.async_image_pii_redaction_destructive,
             pii_backend: settings.pii_backend.clone(),
             filter_music: settings.filter_music,
             // enable_input_capture / enable_accessibility removed — always true

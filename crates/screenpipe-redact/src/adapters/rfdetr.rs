@@ -119,8 +119,9 @@ impl RfdetrConfig {
     /// Expected SHA-256 of the canonical `rfdetr_v8.onnx`. Verified
     /// after every download. If a future training run produces a new
     /// best, bump [`RFDETR_VERSION`], re-publish to HF, update this
-    /// constant — `image_redaction_version < {current}` then
-    /// auto-queues every existing frame for re-redaction.
+    /// constant. Note: the worker is destructive-only and does NOT
+    /// re-redact already-processed frames, so a model-version bump
+    /// only takes effect for newly-captured frames going forward.
     pub const EXPECTED_SHA256: &'static str =
         "431acc0f0beb22a39572b7a50af4fc446e799840fb71320dc124fbd79a121eb3";
 

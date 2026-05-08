@@ -12,14 +12,11 @@
 //! No model in this module — it's pure pixel pushing. Pairs with
 //! [`super::ImageRedactor`] (the model) under the same async worker.
 //!
-//! Two write modes:
-//!
-//! - **non-destructive** (default): writes `<stem>_redacted.<ext>`
-//!   next to the original. Source frame is preserved so the worker
-//!   can re-redact when the detector's version bumps.
-//! - **destructive**: overwrites the original. Trades re-redaction
-//!   for at-rest protection. Match the text pipeline's
-//!   `WorkerConfig::destructive` flag.
+//! Always destructive: the function overwrites the source JPG via an
+//! atomic tempfile + rename. The non-destructive sibling-output mode
+//! used to exist but was removed — it left every original JPG in place
+//! while the user-facing toggle promised PII removal. See commit
+//! aed06df83 + the 20260507 drop-duplicates migration.
 
 use std::path::{Path, PathBuf};
 
@@ -40,12 +37,16 @@ pub struct FrameRedactionOutcome {
     /// Total redacted pixel count — useful for telemetry to detect
     /// pathological "redacts the whole screen" cases.
     pub redacted_pixels: u64,
-    /// Where the redacted image landed on disk.
+    /// Where the redacted image landed on disk. Same as the input
+    /// `image_path`, since redaction is destructive — kept on the
+    /// outcome struct for callers that still want the path back
+    /// (worker logs, metrics).
     pub output_path: PathBuf,
 }
 
 /// Apply `regions` to the image at `image_path`. Filters by `policy`,
-/// draws solid black boxes over the kept regions, writes the result.
+/// draws solid black boxes over the kept regions, atomically overwrites
+/// the source file with the result.
 ///
 /// Failure modes covered:
 /// - missing / unreadable file → `RedactError::Runtime`
@@ -57,7 +58,6 @@ pub fn redact_frame(
     image_path: &Path,
     regions: &[ImageRegion],
     policy: &ImageRedactionPolicy,
-    destructive: bool,
 ) -> Result<FrameRedactionOutcome, RedactError> {
     let img = image::open(image_path)
         .map_err(|e| RedactError::Runtime(format!("open {}: {e}", image_path.display())))?;
@@ -88,16 +88,11 @@ pub fn redact_frame(
         redacted_px += u64::from(x2 - x) * u64::from(y2 - y);
     }
 
-    let output_path = if destructive {
-        image_path.to_path_buf()
-    } else {
-        redacted_sibling(image_path)
-    };
+    let output_path = image_path.to_path_buf();
     // Atomic write: encode to a sibling tempfile, then rename over
     // the destination. Concurrent readers (mp4 encoder, video API
     // serving frames over HTTP) see either the old full file or the
-    // new full file, never a half-written one. Critical in destructive
-    // mode where the destination IS the only copy.
+    // new full file, never a half-written one.
     //
     // We must keep the original extension on the tempfile too — `image`
     // infers format from the path. So `frame.jpg` → `frame.jpg.redact-tmp`
@@ -154,19 +149,6 @@ pub fn redact_frame(
     })
 }
 
-/// `frame_001.jpg` → `frame_001_redacted.jpg`.
-fn redacted_sibling(p: &Path) -> PathBuf {
-    let stem = p
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "frame".into());
-    let ext = p
-        .extension()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "jpg".into());
-    p.with_file_name(format!("{stem}_redacted.{ext}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,11 +171,15 @@ mod tests {
     }
 
     #[test]
-    fn no_regions_still_writes_output() {
+    fn no_regions_still_overwrites_source() {
         let d = tempdir().unwrap();
         let p = make_test_jpg(d.path());
-        let out = redact_frame(&p, &[], &ImageRedactionPolicy::default(), false).unwrap();
+        let out = redact_frame(&p, &[], &ImageRedactionPolicy::default()).unwrap();
         assert!(out.output_path.exists());
+        assert_eq!(
+            out.output_path, p,
+            "must overwrite source path, not write a sibling"
+        );
         assert_eq!(out.regions_redacted, 0);
     }
 
@@ -213,13 +199,13 @@ mod tests {
                 score: 0.1,
             }, // below floor
         ];
-        let out = redact_frame(&p, &regions, &ImageRedactionPolicy::default(), false).unwrap();
+        let out = redact_frame(&p, &regions, &ImageRedactionPolicy::default()).unwrap();
         assert_eq!(out.regions_redacted, 1);
         assert_eq!(out.regions_dropped, 1);
         assert!(out.redacted_pixels >= 30 * 20);
 
-        // Confirm the kept region is actually black.
-        let img = image::open(&out.output_path).unwrap().to_rgb8();
+        // Confirm the kept region is actually black on the source path.
+        let img = image::open(&p).unwrap().to_rgb8();
         for px in 10..40 {
             for py in 10..30 {
                 assert_eq!(img.get_pixel(px, py), &Rgb([0, 0, 0]));
@@ -227,8 +213,13 @@ mod tests {
         }
     }
 
+    /// Regression guard for the only-source-overwrite contract: there
+    /// must NEVER be a `_redacted.<ext>` sibling left next to the
+    /// source after a redact_frame() call. The non-destructive sibling
+    /// mode was removed in the destructive-only refactor; this test
+    /// makes sure no future hand-edit re-introduces it.
     #[test]
-    fn destructive_overwrites_in_place() {
+    fn never_writes_redacted_sibling() {
         let d = tempdir().unwrap();
         let p = make_test_jpg(d.path());
         let r = ImageRegion {
@@ -236,8 +227,19 @@ mod tests {
             label: SpanLabel::Secret,
             score: 1.0,
         };
-        let out = redact_frame(&p, &[r], &ImageRedactionPolicy::default(), true).unwrap();
-        assert_eq!(out.output_path, p, "destructive must write to source path");
+        let out = redact_frame(&p, &[r], &ImageRedactionPolicy::default()).unwrap();
+        assert_eq!(out.output_path, p, "must write to source path");
+        let sibling = d.path().join("frame_redacted.png");
+        assert!(
+            !sibling.exists(),
+            "destructive worker must NOT leave a _redacted sibling"
+        );
+        // No leftover redact-tmp either.
+        let tmp_sibling = d.path().join("frame.redact-tmp.png");
+        assert!(
+            !tmp_sibling.exists(),
+            "atomic-rename tempfile must be cleaned up"
+        );
     }
 
     #[test]
@@ -249,7 +251,7 @@ mod tests {
             label: SpanLabel::Url,
             score: 1.0,
         };
-        let out = redact_frame(&p, &[r], &ImageRedactionPolicy::default(), false).unwrap();
+        let out = redact_frame(&p, &[r], &ImageRedactionPolicy::default()).unwrap();
         // 80..100 × 70..80 = 20 × 10 = 200 px
         assert_eq!(out.redacted_pixels, 200);
     }
@@ -270,7 +272,7 @@ mod tests {
                 score: 0.9,
             },
         ];
-        let out = redact_frame(&p, &regions, &ImageRedactionPolicy::secrets_only(), false).unwrap();
+        let out = redact_frame(&p, &regions, &ImageRedactionPolicy::secrets_only()).unwrap();
         assert_eq!(out.regions_redacted, 1);
         assert_eq!(out.regions_dropped, 1);
     }

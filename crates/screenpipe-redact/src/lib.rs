@@ -59,10 +59,9 @@
 //!   no model.
 //! - [`image::worker`] — image reconciliation loop. Scans the
 //!   `frames` table, calls `ImageRedactor::detect` +
-//!   `frame_redactor::redact_frame`, writes back the
-//!   `image_redacted_at` / `image_redaction_version` /
-//!   `image_redaction_regions` columns added by
-//!   `20260503_add_frames_image_redacted.sql`.
+//!   `frame_redactor::redact_frame`, atomically overwrites the source
+//!   JPG, and stamps `frames.image_redacted_at` (the single
+//!   "is processed" gate after the 20260507 drop-duplicates migration).
 //!
 //! ## Defaults
 //!
@@ -110,13 +109,16 @@ pub struct RedactionOutput {
 /// [`redact`](Redactor::redact) from many tasks concurrently.
 #[async_trait]
 pub trait Redactor: Send + Sync {
-    /// A short identifier — used in the database `redaction_version`
-    /// column so we can re-redact when the implementation changes.
+    /// A short identifier — historically written into the database
+    /// `redaction_version` column. The column is gone (the 20260507
+    /// drop-duplicates migration removed re-redaction tracking — the
+    /// worker is destructive-only now), but the trait method is kept
+    /// for logging / metrics.
     fn name(&self) -> &str;
 
-    /// Bumped by the implementor whenever the redaction logic
-    /// materially changes. Used to decide whether existing
-    /// `text_redacted` rows should be invalidated.
+    /// Implementation version. No longer drives re-redaction (the
+    /// source text is gone after the first pass), but kept on the
+    /// trait for logs and human triage.
     fn version(&self) -> u32;
 
     /// Redact one input. Default impl forwards to `redact_batch` so

@@ -496,25 +496,17 @@ impl ServerCore {
             // is here so flipping the enclave OFF on the local mode
             // is a one-line change once OnnxRedactor is ready.
             let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
-            // Always destructive — the user-facing toggle is labeled
-            // "AI PII removal", so users expect PII to be REMOVED from
-            // the source columns, not duplicated into a sibling.
-            // The non-destructive sibling-write path was only ever
-            // useful for re-redacting with a future model, which is a
-            // dev concern, not a user concern. The destructive flag
-            // in WorkerConfig + the underlying config field are now
-            // unreachable; both will be torn out in a follow-up
-            // commit along with a migration that drops the now-dead
-            // text_redacted / redaction_version columns.
-            info!(
-                "starting async text-PII reconciliation worker \
-                 (backend={backend}, destructive=true)"
-            );
+            // The worker is destructive-only: it overwrites the source
+            // columns (`text` / `transcription` / `text_content` /
+            // `accessibility_text`) with the redacted text and stamps
+            // `*_redacted_at`. That's what the user-facing "AI PII
+            // removal" toggle means. The 20260507 migration drops the
+            // dead duplicate columns the old non-destructive mode used.
+            info!("starting async text-PII reconciliation worker (backend={backend})");
             let pipeline = Pipeline::regex_then_ai(ai, PipelineConfig::default());
             let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
             let cfg = WorkerConfig {
                 tables: ALL_TARGET_TABLES.to_vec(),
-                destructive: true,
                 ..Default::default()
             };
             let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg).spawn();
@@ -527,22 +519,11 @@ impl ServerCore {
             use screenpipe_redact::ImageRedactor;
 
             let pool = db.pool.clone();
-            // Same rationale as the text worker above: force destructive
-            // so the toggle's label ("AI PII removal") matches behavior.
-            // The user-facing flag for non-destructive sibling output is
-            // ignored; tear-out + migration in follow-up.
-            let destructive = true;
             if use_tinfoil {
-                info!(
-                    "starting async image-PII worker (backend=tinfoil, destructive={destructive})"
-                );
-                let detector = Arc::new(TinfoilImageRedactor::from_env())
-                    as Arc<dyn ImageRedactor>;
-                let cfg = ImageWorkerConfig {
-                    destructive,
-                    ..Default::default()
-                };
-                let _ = ImageWorker::new(pool, detector, cfg).spawn();
+                info!("starting async image-PII worker (backend=tinfoil)");
+                let detector =
+                    Arc::new(TinfoilImageRedactor::from_env()) as Arc<dyn ImageRedactor>;
+                let _ = ImageWorker::new(pool, detector, ImageWorkerConfig::default()).spawn();
             } else {
                 // Local mode: rfdetr_v8 ONNX. First-run downloads
                 // ~108 MB from huggingface.co/screenpipe/pii-image-redactor
@@ -550,16 +531,15 @@ impl ServerCore {
                 tokio::spawn(async move {
                     match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
                         Ok(detector) => {
-                            info!(
-                                "starting async image-PII worker (backend=local, destructive={destructive})"
-                            );
-                            let cfg = ImageWorkerConfig {
-                                destructive,
-                                ..Default::default()
-                            };
+                            info!("starting async image-PII worker (backend=local)");
                             let detector_arc =
                                 Arc::new(detector) as Arc<dyn ImageRedactor>;
-                            let _ = ImageWorker::new(pool, detector_arc, cfg).spawn();
+                            let _ = ImageWorker::new(
+                                pool,
+                                detector_arc,
+                                ImageWorkerConfig::default(),
+                            )
+                            .spawn();
                         }
                         Err(e) => {
                             warn!(

@@ -327,35 +327,23 @@ pub struct RecordArgs {
     #[arg(long, default_value_t = true)]
     pub use_pii_removal: bool,
 
-    /// Enable the async PII reconciliation worker (issue #3185). Runs a
-    /// background task after capture to populate `text_redacted` columns
-    /// on ocr_text, audio_transcriptions, accessibility, and ui_events.
-    /// Off by default — capture path is unaffected either way.
+    /// Enable the async PII reconciliation worker. Runs a background
+    /// task after capture that OVERWRITES PII in the source columns
+    /// of ocr_text, audio_transcriptions, frames.accessibility_text,
+    /// and ui_events.text_content. Raw secrets are gone after the
+    /// worker processes the row. Off by default — capture path is
+    /// unaffected either way.
     #[arg(long, default_value_t = false)]
     pub async_pii_redaction: bool,
-
-    /// When `--async-pii-redaction` is on, also overwrite the source
-    /// column (raw text) with the redacted version. Destroys the raw
-    /// secret at rest; trades re-redaction-on-better-model for
-    /// stronger at-rest privacy. Default false.
-    #[arg(long, default_value_t = false)]
-    pub async_pii_redaction_destructive: bool,
 
     /// Enable the async IMAGE-PII reconciliation worker. Independent
     /// of `--async-pii-redaction` (text). Runs the rfdetr_v8 detector
     /// over each captured frame, blacks out detected PII regions in
-    /// the JPG. Requires `rfdetr_v8.onnx` at `~/.screenpipe/models/`
-    /// and the binary built with one of the `onnx-*` cargo features.
-    /// Off by default.
+    /// the JPG (atomic overwrite of the source file). Requires
+    /// `rfdetr_v8.onnx` at `~/.screenpipe/models/` and the binary
+    /// built with one of the `onnx-*` cargo features. Off by default.
     #[arg(long, default_value_t = false)]
     pub async_image_pii_redaction: bool,
-
-    /// When `--async-image-pii-redaction` is on, overwrite the source
-    /// JPG in place. When off (default), writes
-    /// `<stem>_redacted.<ext>` next to the original. Same trade-off
-    /// as the text variant.
-    #[arg(long, default_value_t = false)]
-    pub async_image_pii_redaction_destructive: bool,
 
     /// Backend for the AI PII workers — `local` (on-device ONNX,
     /// privacy by construction, slower on weak hardware) or
@@ -515,9 +503,7 @@ impl RecordArgs {
             disable_vision: self.disable_vision,
             use_pii_removal: self.use_pii_removal,
             async_pii_redaction: self.async_pii_redaction,
-            async_pii_redaction_destructive: self.async_pii_redaction_destructive,
             async_image_pii_redaction: self.async_image_pii_redaction,
-            async_image_pii_redaction_destructive: self.async_image_pii_redaction_destructive,
             pii_backend: self.pii_backend.clone(),
             filter_music: self.filter_music,
             #[allow(deprecated)]

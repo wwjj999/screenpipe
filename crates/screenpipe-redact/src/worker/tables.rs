@@ -4,13 +4,11 @@
 
 //! Per-table queries used by the reconciliation worker.
 //!
-//! After the `20260501_*` migration, each text-bearing table grows
-//! the redacted-tracking columns. Most use the bare convention
-//! (`text_redacted` / `redacted_at` / `redaction_version`); the
-//! accessibility surface, which now lives on `frames`, uses prefixed
-//! names (`accessibility_text_redacted` / `accessibility_redacted_at`
-//! / `accessibility_redaction_version`) — see
-//! [`TargetTable::redacted_col`] for the per-variant resolver.
+//! Destructive-only model: the worker overwrites the source column
+//! (`text` / `transcription` / `accessibility_text` / `text_content`)
+//! with the redacted text and stamps a `redacted_at` timestamp. There
+//! is no separate "redacted text" column; the source IS the redacted
+//! text after the UPDATE returns.
 //!
 //! ## What we redact
 //!
@@ -23,23 +21,20 @@
 //! 3. **`frames.accessibility_text`** — accessibility-tree text. The
 //!    standalone `accessibility` table was consolidated into `frames`
 //!    by `20260312000001_drop_dead_fts_tables.sql`; we redact on the
-//!    new home using prefixed columns so the shared `frames` table
-//!    can carry per-source redaction state independently.
+//!    new home. The "is processed" timestamp is prefixed
+//!    (`accessibility_redacted_at`) so the same `frames` row can carry
+//!    independent state for accessibility text vs. image redaction.
 //! 4. **`ui_events`** — user input events. The same table holds both
 //!    typed/keystroke text (`event_type IN ('text', 'key')`) and
 //!    clipboard contents (`event_type = 'clipboard'`). Source column
 //!    `text_content`. Split into two variants so the row-fetch SQL
-//!    can filter by `event_type` — both go through the same
-//!    redactor but they're different deployment surfaces (a user
-//!    might want clipboard always-redacted but typed text raw, for
-//!    example).
+//!    can filter by `event_type`.
 //!
 //! ## "Needs redaction" predicate
 //!
-//! `<redacted_col> IS NULL OR <version_col> < {current}`. That makes
-//! re-redaction free: when the redactor's version bumps the worker
-//! sweeps over old rows automatically. The exact column names depend
-//! on the variant — see the per-variant getters.
+//! `<redacted_at_col> IS NULL`. Single bit per row — no version-based
+//! re-redaction (the source text is already gone after the first pass,
+//! so re-redacting redacted text would be a no-op anyway).
 
 use sqlx::{Row, SqlitePool};
 
@@ -52,11 +47,9 @@ pub enum TargetTable {
     AudioTranscription,
     /// Accessibility-tree text — lives on `frames.accessibility_text`
     /// since the `accessibility` table was consolidated into `frames`
-    /// by `20260312000001_drop_dead_fts_tables.sql`. The redaction
-    /// columns are prefixed (`accessibility_text_redacted`,
-    /// `accessibility_redacted_at`, `accessibility_redaction_version`)
-    /// so they don't collide with future per-frame redaction state on
-    /// other source columns.
+    /// by `20260312000001_drop_dead_fts_tables.sql`. The "is processed"
+    /// column is prefixed (`accessibility_redacted_at`) so it doesn't
+    /// collide with `frames.image_redacted_at` (image PII worker).
     Accessibility,
     /// Typed text + keystrokes captured via UI events
     /// (`ui_events.text_content` filtered to `event_type IN ('text','key')`).
@@ -94,7 +87,7 @@ impl TargetTable {
         }
     }
 
-    /// Source column the redactor reads.
+    /// Source column the redactor reads AND overwrites.
     pub fn source_col(&self) -> &'static str {
         match self {
             Self::Ocr => "text",
@@ -104,34 +97,14 @@ impl TargetTable {
         }
     }
 
-    /// Column the worker writes the redacted text into.
-    /// Most tables use the bare `text_redacted` convention; the
-    /// frames-hosted accessibility variant prefixes its columns to
-    /// avoid colliding with potential future per-frame redaction
-    /// state on other source columns (e.g. `frames.full_text`).
-    pub fn redacted_col(&self) -> &'static str {
-        match self {
-            Self::Accessibility => "accessibility_text_redacted",
-            _ => "text_redacted",
-        }
-    }
-
-    /// Column holding the unix-seconds timestamp of the last redaction.
+    /// Column holding the unix-seconds timestamp of the last redaction,
+    /// used both as the "needs redaction" gate (`IS NULL`) and as
+    /// audit metadata. Prefixed for the accessibility variant since
+    /// it shares `frames` with the image-redaction worker.
     pub fn redacted_at_col(&self) -> &'static str {
         match self {
             Self::Accessibility => "accessibility_redacted_at",
             _ => "redacted_at",
-        }
-    }
-
-    /// Column holding the redactor's `version()` at write time. The
-    /// "needs redaction" predicate compares this to the running
-    /// redactor's current version so a model bump auto-queues every
-    /// existing row.
-    pub fn redaction_version_col(&self) -> &'static str {
-        match self {
-            Self::Accessibility => "accessibility_redaction_version",
-            _ => "redaction_version",
         }
     }
 
@@ -146,8 +119,7 @@ impl TargetTable {
     }
 
     /// Extra `WHERE`-clause filter beyond the redacted-NULL predicate.
-    /// Used to slice the `ui_events` table by `event_type` and to skip
-    /// frames whose accessibility_text is NULL/empty.
+    /// Used to slice the `ui_events` table by `event_type`.
     pub fn extra_filter(&self) -> Option<&'static str> {
         match self {
             Self::UiEventsKeyboard => Some("event_type IN ('text','key')"),
@@ -184,14 +156,14 @@ pub async fn fetch_unredacted(
         "SELECT {pk} AS id, {src} AS text \
          FROM {tbl} \
          WHERE {src} IS NOT NULL AND {src} != '' \
-           AND {redacted} IS NULL\
+           AND {redacted_at} IS NULL\
            {extra} \
          ORDER BY {pk} DESC \
          LIMIT ?",
         pk = table.pk_col(),
         src = table.source_col(),
         tbl = table.table(),
-        redacted = table.redacted_col(),
+        redacted_at = table.redacted_at_col(),
         extra = extra,
     );
 
@@ -206,68 +178,34 @@ pub async fn fetch_unredacted(
     Ok(out)
 }
 
-/// Write back the redacted text and metadata for one row.
+/// Overwrite the source column with the redacted text and stamp the
+/// `redacted_at` timestamp.
 ///
-/// When `destructive` is `false` (default, matches issue #3185 spec):
-///   `UPDATE {tbl} SET text_redacted=?, redacted_at=now, redaction_version=? WHERE pk=?`
-/// The source column (`text` / `transcription` / `text_content`) keeps
-/// the verbatim input, so the worker can re-redact when the
-/// redactor's version bumps.
+/// `UPDATE {tbl} SET {src} = ?, {redacted_at} = strftime('%s','now') WHERE {pk} = ?`
 ///
-/// When `destructive` is `true`:
-///   ... same as above, plus `{src} = ?` set to the redacted text.
-/// Permanent: the raw text is gone after the UPDATE returns. Trades
-/// re-redaction-ability for at-rest protection.
+/// Destructive by design: the raw text is gone after the UPDATE returns.
+/// That's the contract of the user-facing "AI PII removal" toggle.
 pub async fn write_redacted(
     pool: &SqlitePool,
     table: TargetTable,
     id: i64,
     redacted: &str,
-    version: i64,
-    destructive: bool,
 ) -> Result<(), sqlx::Error> {
-    if destructive {
-        let q = format!(
-            "UPDATE {tbl} SET \
-                {src} = ?, \
-                {redacted_col} = ?, \
-                {redacted_at_col} = strftime('%s', 'now'), \
-                {version_col} = ? \
-             WHERE {pk} = ?",
-            tbl = table.table(),
-            src = table.source_col(),
-            redacted_col = table.redacted_col(),
-            redacted_at_col = table.redacted_at_col(),
-            version_col = table.redaction_version_col(),
-            pk = table.pk_col(),
-        );
-        sqlx::query(&q)
-            .bind(redacted)
-            .bind(redacted)
-            .bind(version)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    } else {
-        let q = format!(
-            "UPDATE {tbl} SET \
-                {redacted_col} = ?, \
-                {redacted_at_col} = strftime('%s', 'now'), \
-                {version_col} = ? \
-             WHERE {pk} = ?",
-            tbl = table.table(),
-            redacted_col = table.redacted_col(),
-            redacted_at_col = table.redacted_at_col(),
-            version_col = table.redaction_version_col(),
-            pk = table.pk_col(),
-        );
-        sqlx::query(&q)
-            .bind(redacted)
-            .bind(version)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    }
+    let q = format!(
+        "UPDATE {tbl} SET \
+            {src} = ?, \
+            {redacted_at_col} = strftime('%s', 'now') \
+         WHERE {pk} = ?",
+        tbl = table.table(),
+        src = table.source_col(),
+        redacted_at_col = table.redacted_at_col(),
+        pk = table.pk_col(),
+    );
+    sqlx::query(&q)
+        .bind(redacted)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -277,8 +215,9 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     /// Build an in-memory SQLite DB with just the schema this module needs.
-    /// Mirrors the production migration in `screenpipe-db` but kept here so
-    /// the unit test is self-contained.
+    /// Mirrors the production schema after the 20260507 drop-duplicates
+    /// migration: only the `*_redacted_at` "is processed" timestamp
+    /// remains; the source column doubles as the redacted output.
     async fn setup() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -291,28 +230,21 @@ mod tests {
             CREATE TABLE ocr_text (
                 frame_id INTEGER PRIMARY KEY,
                 text TEXT NOT NULL,
-                text_redacted TEXT,
-                redacted_at INTEGER,
-                redaction_version INTEGER
+                redacted_at INTEGER
             );
             -- Accessibility text now lives on `frames` (the standalone
-            -- `accessibility` table was dropped on 2026-03-12). The
-            -- redaction columns are prefixed to avoid colliding with
-            -- per-frame state on other source columns.
+            -- `accessibility` table was dropped on 2026-03-12). Only the
+            -- prefixed timestamp survives the destructive-only refactor.
             CREATE TABLE frames (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 accessibility_text TEXT,
-                accessibility_text_redacted TEXT,
-                accessibility_redacted_at INTEGER,
-                accessibility_redaction_version INTEGER
+                accessibility_redacted_at INTEGER
             );
             CREATE TABLE ui_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_type TEXT NOT NULL,
                 text_content TEXT,
-                text_redacted TEXT,
-                redacted_at INTEGER,
-                redaction_version INTEGER
+                redacted_at INTEGER
             );
             "#,
         )
@@ -329,7 +261,8 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO ocr_text (frame_id, text, text_redacted, redaction_version) VALUES (2, 'hi', '[X]', 1)")
+        // Already-processed row: source overwritten + redacted_at stamped.
+        sqlx::query("INSERT INTO ocr_text (frame_id, text, redacted_at) VALUES (2, '[X]', 1)")
             .execute(&pool)
             .await
             .unwrap();
@@ -351,58 +284,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_redacted_additive_keeps_source() {
+    async fn write_redacted_overwrites_source_and_stamps_redacted_at() {
         let pool = setup().await;
         sqlx::query("INSERT INTO ocr_text (frame_id, text) VALUES (1, 'alice@example.com')")
             .execute(&pool)
             .await
             .unwrap();
 
-        // Non-destructive: source column UNCHANGED, redacted column populated.
-        write_redacted(&pool, TargetTable::Ocr, 1, "[EMAIL]", 7, false)
+        write_redacted(&pool, TargetTable::Ocr, 1, "[EMAIL]")
             .await
             .unwrap();
 
-        let row = sqlx::query(
-            "SELECT text, text_redacted, redaction_version FROM ocr_text WHERE frame_id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let row = sqlx::query("SELECT text, redacted_at FROM ocr_text WHERE frame_id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let raw: String = row.get(0);
-        let red: String = row.get(1);
-        let v: i64 = row.get(2);
-        assert_eq!(
-            raw, "alice@example.com",
-            "non-destructive must preserve source"
-        );
-        assert_eq!(red, "[EMAIL]");
-        assert_eq!(v, 7);
-    }
-
-    #[tokio::test]
-    async fn write_redacted_destructive_overwrites_source() {
-        let pool = setup().await;
-        sqlx::query("INSERT INTO ocr_text (frame_id, text) VALUES (1, 'alice@example.com')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // Destructive: source column gets overwritten with the redacted text.
-        write_redacted(&pool, TargetTable::Ocr, 1, "[EMAIL]", 7, true)
-            .await
-            .unwrap();
-
-        let row = sqlx::query(
-            "SELECT text, text_redacted, redaction_version FROM ocr_text WHERE frame_id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let raw: String = row.get(0);
-        let red: String = row.get(1);
-        assert_eq!(raw, "[EMAIL]", "destructive must overwrite source column");
-        assert_eq!(red, "[EMAIL]");
+        let when: Option<i64> = row.get(1);
+        assert_eq!(raw, "[EMAIL]", "source column must be overwritten");
+        assert!(when.is_some(), "redacted_at must be stamped");
     }
 
     #[tokio::test]
@@ -423,7 +323,6 @@ mod tests {
     #[tokio::test]
     async fn ui_events_keyboard_filter_excludes_clipboard() {
         let pool = setup().await;
-        // Mix: 2 keyboard, 1 clipboard.
         sqlx::query("INSERT INTO ui_events (event_type, text_content) VALUES ('text', 'hello')")
             .execute(&pool)
             .await
@@ -468,27 +367,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accessibility_writes_to_prefixed_columns() {
+    async fn accessibility_writes_overwrite_source_and_stamp_prefixed_timestamp() {
         let pool = setup().await;
         sqlx::query("INSERT INTO frames (accessibility_text) VALUES ('Marcus Chen')")
             .execute(&pool)
             .await
             .unwrap();
-        write_redacted(&pool, TargetTable::Accessibility, 1, "[PERSON]", 7, false)
+        write_redacted(&pool, TargetTable::Accessibility, 1, "[PERSON]")
             .await
             .unwrap();
         let row = sqlx::query(
-            "SELECT accessibility_text, accessibility_text_redacted, accessibility_redaction_version
-             FROM frames WHERE id = 1",
+            "SELECT accessibility_text, accessibility_redacted_at FROM frames WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let raw: String = row.get(0);
-        let red: String = row.get(1);
-        let v: i64 = row.get(2);
-        assert_eq!(raw, "Marcus Chen");
-        assert_eq!(red, "[PERSON]");
-        assert_eq!(v, 7);
+        let when: Option<i64> = row.get(1);
+        assert_eq!(raw, "[PERSON]", "source must be overwritten");
+        assert!(when.is_some(), "accessibility_redacted_at must be stamped");
     }
 }

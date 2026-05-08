@@ -192,42 +192,27 @@ pub struct RecordingSettings {
     pub use_pii_removal: bool,
 
     /// Enable the async PII reconciliation worker. When `true`, a
-    /// background task runs after capture to populate the
-    /// `text_redacted` columns on `ocr_text`, `audio_transcriptions`,
-    /// `accessibility`, and `ui_events`. Off by default — capture
-    /// path is unaffected either way. See issue #3185 and the
-    /// `screenpipe-redact` crate for the full design.
+    /// background task runs after capture and OVERWRITES PII in the
+    /// source columns of `ocr_text`, `audio_transcriptions`,
+    /// `frames.accessibility_text`, and `ui_events.text_content`. Raw
+    /// secrets are gone after the worker processes the row — that's
+    /// the contract of the user-facing "AI PII removal" toggle.
+    /// Off by default; capture path is unaffected either way. See
+    /// `screenpipe-redact` for the full design.
     #[serde(rename = "asyncPiiRedaction", default)]
     pub async_pii_redaction: bool,
-
-    /// When `async_pii_redaction` is enabled and this is `true`, the
-    /// reconciliation worker overwrites the source column (raw text)
-    /// with the redacted version. Destroys the raw secret at rest;
-    /// trades the ability to re-redact with a better future model
-    /// for stronger at-rest privacy. Default `false`.
-    #[serde(rename = "asyncPiiRedactionDestructive", default)]
-    pub async_pii_redaction_destructive: bool,
 
     /// Enable image-PII redaction on captured screen frames. When
     /// `true`, the `screenpipe_redact::image::worker` runs alongside
     /// the text reconciliation worker, scans the `frames` table, runs
     /// the RF-DETR-Nano detector, and blacks out detected PII regions
-    /// in each JPG. Off by default — orthogonal to `async_pii_redaction`
-    /// (text path), independently togglable. Requires the
-    /// `screenpipe-redact` crate to be built with one of the `onnx-*`
-    /// cargo features and the `rfdetr_v8.onnx` model present at
-    /// `~/.screenpipe/models/`. Mirror flag for destructive mode is
-    /// [`Self::async_image_pii_redaction_destructive`].
+    /// in each JPG (atomic overwrite of the source file). Off by
+    /// default — orthogonal to `async_pii_redaction` (text path),
+    /// independently togglable. Requires the `screenpipe-redact`
+    /// crate to be built with one of the `onnx-*` cargo features and
+    /// the `rfdetr_v8.onnx` model present at `~/.screenpipe/models/`.
     #[serde(rename = "asyncImagePiiRedaction", default)]
     pub async_image_pii_redaction: bool,
-
-    /// When `async_image_pii_redaction` is enabled and this is `true`,
-    /// the worker overwrites the source JPG in place. When `false`
-    /// (default), it writes `<stem>_redacted.<ext>` next to the
-    /// original. Same trade-off as the text variant — at-rest
-    /// protection vs. ability to re-redact when the model improves.
-    #[serde(rename = "asyncImagePiiRedactionDestructive", default)]
-    pub async_image_pii_redaction_destructive: bool,
 
     /// Where the AI PII redaction actually runs. One switch flips
     /// BOTH modalities (text + image) because the user-facing
@@ -421,9 +406,7 @@ impl Default for RecordingSettings {
             languages: vec![],
             use_pii_removal: false,
             async_pii_redaction: false,
-            async_pii_redaction_destructive: false,
             async_image_pii_redaction: false,
-            async_image_pii_redaction_destructive: false,
             pii_backend: default_pii_backend(),
             user_id: String::new(),
             user_name: None,

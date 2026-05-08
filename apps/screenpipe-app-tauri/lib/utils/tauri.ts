@@ -1568,42 +1568,50 @@ languages: string[];
 usePiiRemoval: boolean; 
 /**
  * Enable the async PII reconciliation worker. When `true`, a
- * background task runs after capture to populate the
- * `text_redacted` columns on `ocr_text`, `audio_transcriptions`,
- * `accessibility`, and `ui_events`. Off by default — capture
- * path is unaffected either way. See issue #3185 and the
- * `screenpipe-redact` crate for the full design.
+ * background task runs after capture and OVERWRITES PII in the
+ * source columns of `ocr_text`, `audio_transcriptions`,
+ * `frames.accessibility_text`, and `ui_events.text_content`. Raw
+ * secrets are gone after the worker processes the row — that's
+ * the contract of the user-facing "AI PII removal" toggle.
+ * Off by default; capture path is unaffected either way. See
+ * `screenpipe-redact` for the full design.
  */
 asyncPiiRedaction?: boolean; 
-/**
- * When `async_pii_redaction` is enabled and this is `true`, the
- * reconciliation worker overwrites the source column (raw text)
- * with the redacted version. Destroys the raw secret at rest;
- * trades the ability to re-redact with a better future model
- * for stronger at-rest privacy. Default `false`.
- */
-asyncPiiRedactionDestructive?: boolean; 
 /**
  * Enable image-PII redaction on captured screen frames. When
  * `true`, the `screenpipe_redact::image::worker` runs alongside
  * the text reconciliation worker, scans the `frames` table, runs
  * the RF-DETR-Nano detector, and blacks out detected PII regions
- * in each JPG. Off by default — orthogonal to `async_pii_redaction`
- * (text path), independently togglable. Requires the
- * `screenpipe-redact` crate to be built with one of the `onnx-*`
- * cargo features and the `rfdetr_v8.onnx` model present at
- * `~/.screenpipe/models/`. Mirror flag for destructive mode is
- * [`Self::async_image_pii_redaction_destructive`].
+ * in each JPG (atomic overwrite of the source file). Off by
+ * default — orthogonal to `async_pii_redaction` (text path),
+ * independently togglable. Requires the `screenpipe-redact`
+ * crate to be built with one of the `onnx-*` cargo features and
+ * the `rfdetr_v8.onnx` model present at `~/.screenpipe/models/`.
  */
 asyncImagePiiRedaction?: boolean; 
 /**
- * When `async_image_pii_redaction` is enabled and this is `true`,
- * the worker overwrites the source JPG in place. When `false`
- * (default), it writes `<stem>_redacted.<ext>` next to the
- * original. Same trade-off as the text variant — at-rest
- * protection vs. ability to re-redact when the model improves.
+ * Where the AI PII redaction actually runs. One switch flips
+ * BOTH modalities (text + image) because the user-facing
+ * "AI PII removal" toggle is one knob.
+ * 
+ * - `"local"` (default): on-device ONNX models. Privacy by
+ * construction — pixels and text never leave the box. Slower,
+ * especially on weak hardware (~1-3 s per text row, ~60-180 ms
+ * per frame).
+ * - `"tinfoil"`: send to the screenpipe Tinfoil enclave (H200,
+ * confidential compute). Much faster (~30-100 ms per row /
+ * frame). Data leaves the device but is end-to-end encrypted
+ * into an attested confidential-compute enclave that even
+ * Tinfoil ops can't read into. Requires network +
+ * `SCREENPIPE_PRIVACY_FILTER_API_KEY` (or the cloud auth key).
+ * 
+ * Note on attestation: the proper attested-transport client
+ * (Tinfoil's secure-client SDK) is Go/Python/JS-only at time of
+ * writing. The Rust adapter currently uses plain HTTPS — which
+ * gives confidentiality vs. the network but NOT vs. a malicious
+ * Tinfoil operator. Tracked separately; structured for swap-in.
  */
-asyncImagePiiRedactionDestructive?: boolean; 
+piiBackend?: string; 
 /**
  * Screenpipe cloud user ID. Empty string means not logged in.
  * Kept as String (not Option) to match existing store.bin schema.

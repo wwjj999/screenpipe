@@ -72,15 +72,15 @@ pub struct ImageRegion {
 /// many tasks.
 #[async_trait]
 pub trait ImageRedactor: Send + Sync {
-    /// Short identifier — written into `frames.image_redaction_version`
-    /// alongside [`Self::version`] so the worker can re-redact when the
-    /// model changes.
+    /// Short identifier — used in worker logs / metrics. Historically
+    /// also written to a `frames.image_redaction_version` column,
+    /// dropped by the 20260507 migration when the worker became
+    /// destructive-only.
     fn name(&self) -> &str;
 
-    /// Bumped by the implementor whenever the detection logic
-    /// materially changes (new weights, new threshold default, new
-    /// label-mapping). Used to decide whether existing frames should
-    /// be invalidated and re-redacted.
+    /// Implementation version. No longer drives re-redaction (the
+    /// source JPG is overwritten on first pass); kept on the trait
+    /// for logs and human triage.
     fn version(&self) -> u32;
 
     /// Run inference on a single image at `image_path`. Returns the

@@ -1503,10 +1503,7 @@ async fn main() -> anyhow::Result<()> {
         };
         use std::sync::Arc;
 
-        info!(
-            "starting async PII reconciliation worker (destructive={})",
-            record_args.async_pii_redaction_destructive
-        );
+        info!("starting async PII reconciliation worker (destructive overwrite of source columns)");
 
         // Pipeline: regex pre-pass + Tinfoil enclave fallback. Regex
         // catches structural PII deterministically and on-device; the
@@ -1518,7 +1515,6 @@ async fn main() -> anyhow::Result<()> {
 
         let worker_cfg = WorkerConfig {
             tables: ALL_TARGET_TABLES.to_vec(),
-            destructive: record_args.async_pii_redaction_destructive,
             ..Default::default()
         };
         let _worker_handle = Worker::new(db.pool.clone(), pipeline_arc, worker_cfg).spawn();
@@ -1547,13 +1543,9 @@ async fn main() -> anyhow::Result<()> {
         match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
             Ok(detector) => {
                 info!(
-                    "starting async image-PII reconciliation worker (destructive={})",
-                    record_args.async_image_pii_redaction_destructive
+                    "starting async image-PII reconciliation worker (destructive overwrite of source JPGs)"
                 );
-                let cfg = ImageWorkerConfig {
-                    destructive: record_args.async_image_pii_redaction_destructive,
-                    ..Default::default()
-                };
+                let cfg = ImageWorkerConfig::default();
                 let detector_arc = Arc::new(detector) as Arc<dyn ImageRedactor>;
                 let _img_handle = ImageWorker::new(db.pool.clone(), detector_arc, cfg).spawn();
             }
