@@ -13,14 +13,14 @@
 //!   - resolves the app data dir for the cursor file
 //!   - spawns the long-running task with a tokio shutdown channel
 //!
-//! Everything is gated by `#[cfg(feature = "enterprise-telemetry")]` — consumer
+//! Everything is gated by `#[cfg(feature = "enterprise-build")]` — consumer
 //! builds compile this file as a no-op.
 
-#[cfg(feature = "enterprise-telemetry")]
+#[cfg(feature = "enterprise-build")]
 #[path = "../../../../ee/desktop-rust/enterprise_sync.rs"]
 mod ee_sync;
 
-#[cfg(feature = "enterprise-telemetry")]
+#[cfg(feature = "enterprise-build")]
 mod imp {
     use super::ee_sync;
     use crate::recording::local_api_context_from_app;
@@ -218,14 +218,15 @@ mod imp {
             since_ts: Option<&str>,
             limit: u32,
         ) -> Result<Vec<UiEventRow>, EnterpriseSyncError> {
-            // Local /search content_type=ui returns rows from the
+            // Local /search content_type=input returns rows from the
             // `ui_events` table — clicks, keystrokes, focus changes,
-            // clipboard. Only sync events that have an element_name
-            // (real AX-resolved targets) — keystroke noise without
-            // element context isn't useful for SOP synthesis and
-            // bloats the corpus.
+            // clipboard. (The DB enum is `Input`, not `UI` — `UiContent`
+            // is a separate deprecated content type for AX text snapshots.)
+            // Only sync events that have an element_name (real AX-resolved
+            // targets) — keystroke noise without element context isn't
+            // useful for SOP synthesis and bloats the corpus.
             let mut url = format!(
-                "{}/search?content_type=ui&limit={}",
+                "{}/search?content_type=input&limit={}",
                 self.api_url_base, limit
             );
             if let Some(ts) = since_ts {
@@ -450,11 +451,11 @@ mod imp {
     }
 }
 
-#[cfg(feature = "enterprise-telemetry")]
+#[cfg(feature = "enterprise-build")]
 pub use imp::spawn;
 
 /// No-op stub for non-enterprise builds. Returns None so callers can ignore.
-#[cfg(not(feature = "enterprise-telemetry"))]
+#[cfg(not(feature = "enterprise-build"))]
 pub fn spawn(_app: &tauri::AppHandle) -> Option<tokio::sync::watch::Sender<bool>> {
     None
 }

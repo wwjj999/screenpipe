@@ -8,7 +8,7 @@
 //! (`ee/desktop-rust/enterprise_sync.rs`'s `#[cfg(test)] mod tests`). This
 //! integration test file's only job is to provide a compile target that
 //! pulls that module in via `#[path]` so the embedded tests run as part of
-//! `cargo test --features enterprise-telemetry --test enterprise_sync_test`.
+//! `cargo test --features enterprise-build --test enterprise_sync_test`.
 //!
 //! Why a separate test target: the desktop binary's main test build has
 //! pre-existing compile errors in unrelated modules (pi.rs) that block
@@ -16,7 +16,7 @@
 //! independently and avoids that bin tree entirely — keeping these tests
 //! actually runnable in CI.
 
-#![cfg(feature = "enterprise-telemetry")]
+#![cfg(feature = "enterprise-build")]
 
 #[path = "../../../../ee/desktop-rust/enterprise_sync.rs"]
 mod ee_sync;

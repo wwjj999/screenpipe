@@ -10057,6 +10057,7 @@ dependencies = [
  "tauri-specta",
  "tauri-utils",
  "tempfile",
+ "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
  "tokio-tungstenite",

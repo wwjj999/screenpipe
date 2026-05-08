@@ -11,7 +11,7 @@
 //! org's admin chat dashboard.
 //!
 //! This module is **only compiled into enterprise builds** (gated by the
-//! `enterprise-telemetry` Cargo feature, which itself requires `enterprise-build`).
+//! `enterprise-build` Cargo feature).
 //! Consumer builds never reach this code path. All HTTP I/O is handled here so
 //! the desktop crate stays a thin orchestration layer — only the
 //! `LocalApiClient` trait is injected from outside (mockable for tests).
@@ -490,9 +490,19 @@ pub async fn run_one_sync(
     let audio = local
         .fetch_audio_since(cursor.last_audio_ts.as_deref(), PAGE_LIMIT)
         .await?;
-    let ui = local
+    // UI events are best-effort — a backend that doesn't expose them yet
+    // (or blocks the search query) shouldn't kill the whole sync batch.
+    // The frame + audio paths are the load-bearing ones.
+    let ui = match local
         .fetch_ui_events_since(cursor.last_ui_ts.as_deref(), PAGE_LIMIT)
-        .await?;
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("enterprise sync: ui fetch failed (skipping): {}", e);
+            Vec::new()
+        }
+    };
     // One snapshot per tick. Best-effort — failure to encode/fetch
     // shouldn't block the rest of the batch.
     let snapshots: Vec<SnapshotRow> = match local.fetch_latest_snapshot().await {
