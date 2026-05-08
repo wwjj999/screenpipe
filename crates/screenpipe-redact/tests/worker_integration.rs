@@ -144,7 +144,11 @@ async fn worker_redacts_all_five_targets() {
         );
         let red: String = rows[0].get(0);
         let when: i64 = rows[0].get(1);
-        assert!(when > 0, "{}: redacted_at should be stamped", target.label());
+        assert!(
+            when > 0,
+            "{}: redacted_at should be stamped",
+            target.label()
+        );
         assert!(
             red.contains("[EMAIL]") || red.contains("[SECRET]"),
             "{}: source column {:?} doesn't contain a placeholder — destructive overwrite did not happen",
@@ -163,12 +167,10 @@ async fn worker_redacts_all_five_targets() {
 async fn worker_skips_already_redacted_rows() {
     let pool = setup_db().await;
     // Frame 1 is already processed — source already redacted, redacted_at set.
-    sqlx::query(
-        "INSERT INTO ocr_text (frame_id, text, redacted_at) VALUES (1, '[EMAIL]', 1)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO ocr_text (frame_id, text, redacted_at) VALUES (1, '[EMAIL]', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO ocr_text (frame_id, text) VALUES (2, 'bob@example.com')")
         .execute(&pool)
         .await
