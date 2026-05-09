@@ -92,25 +92,36 @@ pub trait ImageRedactor: Send + Sync {
 /// out. Same idea as the text-pipeline's per-label policy: the model
 /// detects everything it can, the policy decides what gets redacted.
 ///
-/// Default is intentionally conservative: ONLY the `Secret` class,
-/// and only at very high confidence (≥ 0.9). This is a hard-won
-/// default — the original `[Person, Email, Phone, Address, Url,
-/// Company, Repo, Handle, Channel, Id, Date, Secret]` allow-list at
-/// `min_score=0.3` produced catastrophic over-redaction in the wild
-/// (May 2026): rfdetr_v8 routinely flagged code identifiers / file
-/// paths / version strings / sidebar nav items as `Url` / `Id` /
-/// `Repo` / `Handle`, so a user who flipped the toggle on found their
-/// timeline rendered useless within hours. Combined with destructive
-/// writes the originals were unrecoverable. See commit history for
-/// the regression incident.
+/// Default policy is `allow=[Secret], min_score=0.50`.
 ///
-/// Re-broadening this default requires:
-///   1. A precision benchmark on real screenpipe content (terminals,
-///      IDEs, browser docs) showing < 1% false-positive rate for the
-///      added classes at the chosen threshold, AND
-///   2. A user-facing policy preset selector in Settings → Privacy
-///      so per-class trade-offs are user-controlled, not silently
-///      destructive.
+/// **Why secrets-only.** For screenpipe's use case (local memory of
+/// the user's screen), most of what the 12-class model flags as "PII"
+/// is actually *value* — emails, names, dates, URLs, channels are
+/// what makes the timeline searchable. The genuinely-dangerous class
+/// is leaked credentials: passwords, API keys, private keys, auth
+/// tokens, database connection strings. Default redaction is
+/// scoped to that.
+///
+/// **Why min_score 0.50.** rfdetr_v9 (trained 2026-05-08 on the 905-
+/// image augmented bench in screenpipe/screenpipe-pii-bench-image)
+/// ships per-class metrics on the Secret class:
+///   thr 0.30 — P=0.90  R=0.78  F1=0.83
+///   thr 0.50 — P=0.97  R=0.66  F1=0.78   ← this default
+///   thr 0.70 — P=1.00  R=0.60  F1=0.75
+/// 0.50 keeps near-perfect precision (≈ 1 false redaction per 33
+/// detections) while catching ~2 / 3 of actual leaked credentials.
+/// The previous v8-era default at 0.9 produced 0 % recall (model
+/// effectively off); this restores function.
+///
+/// Earlier hotfix history (commits 0d55e6c4b → 8125837ff) pushed the
+/// threshold to 0.9 and then hid the UI entirely after rfdetr_v8
+/// over-redacted code/IDE content at any usable threshold. Both
+/// failure modes are addressed by v9 + this policy: precision is
+/// near-perfect, the allow-list is tight, the UI is back.
+///
+/// To re-broaden the allow-list later (Person, Email, Phone, Url, …),
+/// validate per-class precision on the augmented bench and surface a
+/// per-class toggle in Settings → Privacy so users opt in per class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageRedactionPolicy {
     /// Labels whose detections become black boxes. Anything not in
@@ -123,23 +134,23 @@ pub struct ImageRedactionPolicy {
 
 impl Default for ImageRedactionPolicy {
     fn default() -> Self {
-        // Conservative hotfix default — see the type-level docs above
-        // for why we shrank the allow-list and pushed min_score up.
+        // Secrets-only at 0.50 — see the type-level docs for the v9
+        // per-class metrics that motivate this default.
         Self {
             allow: vec![SpanLabel::Secret],
-            min_score: 0.9,
+            min_score: 0.50,
         }
     }
 }
 
 impl ImageRedactionPolicy {
-    /// Convenience: same as the (conservative) `Default` for now —
-    /// kept as a named entry point so callers that explicitly want
-    /// "secrets only" survive future widening of the default.
+    /// Convenience: same as the `Default` for now — kept as a named
+    /// entry point so callers that explicitly want "secrets only"
+    /// survive future widening of the default.
     pub fn secrets_only() -> Self {
         Self {
             allow: vec![SpanLabel::Secret],
-            min_score: 0.9,
+            min_score: 0.50,
         }
     }
 }

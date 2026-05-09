@@ -20,7 +20,7 @@
 //!
 //! ## Reference benchmark numbers
 //!
-//! `rfdetr_v8` (320×320 input, FP32 ONNX, ~109 MB):
+//! `rfdetr_v9` (384×384 input, FP32 ONNX, ~108 MB):
 //!
 //! | platform                   | EP        | p50      |
 //! |----------------------------|-----------|---------:|
@@ -45,7 +45,7 @@ use crate::RedactError;
 use crate::SpanLabel;
 
 const RFDETR_NAME: &str = "rfdetr";
-const RFDETR_VERSION: u32 = 8; // matches the rfdetr_v8 ONNX
+const RFDETR_VERSION: u32 = 9; // matches the rfdetr_v9 ONNX
 
 #[cfg(feature = "onnx-cpu")]
 const NUM_CLASSES: usize = 12;
@@ -73,7 +73,7 @@ const CLASSES: [SpanLabel; NUM_CLASSES] = [
 /// Configuration for [`RfdetrRedactor`].
 #[derive(Debug, Clone)]
 pub struct RfdetrConfig {
-    /// Path to `rfdetr_vN.onnx`. We default to `~/.screenpipe/models/rfdetr_v8.onnx`
+    /// Path to `rfdetr_vN.onnx`. We default to `~/.screenpipe/models/rfdetr_v9.onnx`
     /// in [`Self::default_model_path`] but callers may override (e.g.
     /// for an INT8-quantized variant in the future).
     pub model_path: PathBuf,
@@ -93,20 +93,25 @@ impl Default for RfdetrConfig {
         Self {
             model_path: Self::default_model_path(),
             input_size: 0, // auto-detect from ONNX inputs[0].shape
-            conf_threshold: 0.10,
+            // 0.50 matches ImageRedactionPolicy::default's min_score so
+            // the adapter doesn't waste cycles emitting low-confidence
+            // candidates the policy will discard. The policy can still
+            // tighten further (e.g. 0.70 paranoid mode) — that just
+            // applies a second floor.
+            conf_threshold: 0.50,
         }
     }
 }
 
 impl RfdetrConfig {
-    /// `~/.screenpipe/models/rfdetr_v8.onnx`. Created lazily by
+    /// `~/.screenpipe/models/rfdetr_v9.onnx`. Created lazily by
     /// [`Self::ensure_model_present`] on first run.
     pub fn default_model_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".screenpipe")
             .join("models")
-            .join("rfdetr_v8.onnx")
+            .join("rfdetr_v9.onnx")
     }
 
     /// HuggingFace download URL for the canonical ONNX. Pinned to
@@ -114,16 +119,16 @@ impl RfdetrConfig {
     /// (URL + expected SHA-256 + [`RFDETR_VERSION`] all bumped
     /// together).
     pub const HF_DOWNLOAD_URL: &'static str =
-        "https://huggingface.co/screenpipe/pii-image-redactor/resolve/main/rfdetr_v8.onnx";
+        "https://huggingface.co/screenpipe/pii-image-redactor/resolve/main/rfdetr_v9.onnx";
 
-    /// Expected SHA-256 of the canonical `rfdetr_v8.onnx`. Verified
+    /// Expected SHA-256 of the canonical `rfdetr_v9.onnx`. Verified
     /// after every download. If a future training run produces a new
     /// best, bump [`RFDETR_VERSION`], re-publish to HF, update this
     /// constant. Note: the worker is destructive-only and does NOT
     /// re-redact already-processed frames, so a model-version bump
     /// only takes effect for newly-captured frames going forward.
     pub const EXPECTED_SHA256: &'static str =
-        "431acc0f0beb22a39572b7a50af4fc446e799840fb71320dc124fbd79a121eb3";
+        "179a5e08ab12bfc70ff1e8dc1e2a67379de2a3be93eb2e7e1f8ec3dbd973f662";
 
     /// Make sure the ONNX is present on disk. Idempotent — does
     /// nothing if [`Self::model_path`] already exists with the
@@ -152,7 +157,7 @@ impl RfdetrConfig {
         tracing::info!(
             url = Self::HF_DOWNLOAD_URL,
             target = %self.model_path.display(),
-            "downloading rfdetr_v8.onnx (~108 MB) — first-run only"
+            "downloading rfdetr_v9.onnx (~108 MB) — first-run only"
         );
         let resp = reqwest::Client::new()
             .get(Self::HF_DOWNLOAD_URL)
@@ -189,7 +194,7 @@ impl RfdetrConfig {
         tracing::info!(
             target = %self.model_path.display(),
             bytes = bytes.len(),
-            "rfdetr_v8.onnx ready"
+            "rfdetr_v9.onnx ready"
         );
         Ok(())
     }
@@ -471,7 +476,7 @@ mod tests {
     fn default_path_lives_under_screenpipe_dir() {
         let p = RfdetrConfig::default_model_path();
         let s = p.to_string_lossy();
-        assert!(s.contains(".screenpipe/models/rfdetr_v8.onnx"));
+        assert!(s.contains(".screenpipe/models/rfdetr_v9.onnx"));
     }
 
     #[test]
@@ -502,7 +507,7 @@ mod tests {
         // (Real download path is exercised by integration tests off
         // the unit-test harness.)
         let d = tempdir().unwrap();
-        let p = d.path().join("models").join("rfdetr_v8.onnx");
+        let p = d.path().join("models").join("rfdetr_v9.onnx");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, b"not the real model").unwrap();
         let cfg = RfdetrConfig {
