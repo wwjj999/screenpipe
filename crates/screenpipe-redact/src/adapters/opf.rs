@@ -35,7 +35,7 @@
 
 #![cfg(feature = "opf-text")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -50,9 +50,11 @@ const OPF_TEXT_VERSION: u32 = 3;
 /// canonical screenpipe install layout.
 #[derive(Debug, Clone)]
 pub struct OpfConfig {
-    /// Directory containing `config.json` + `model.safetensors`. Default:
-    /// `~/.screenpipe/models/opf-v3` (we'll add an HF-hub auto-download
-    /// path later — for now callers stage the checkpoint themselves).
+    /// Directory containing `config.json` + `model.safetensors`.
+    /// Default: `~/.screenpipe/models/opf-v3`. First-run is created
+    /// lazily by [`OpfAdapter::load_or_download`] which fetches the
+    /// 2.8 GB checkpoint from HuggingFace and verifies SHA-256 before
+    /// landing.
     pub model_dir: PathBuf,
     /// Hard cap on tokens per call. Anything longer is truncated. The
     /// model was fine-tuned at n_ctx=256 and degrades past that.
@@ -75,6 +77,30 @@ fn default_model_dir() -> PathBuf {
         .join("models")
         .join("opf-v3")
 }
+
+/// HuggingFace base URL for the canonical v3 fine-tune. Pinned to
+/// `main` so a model bump goes through a deliberate code change
+/// (URLs + expected SHA-256s + [`OPF_TEXT_VERSION`] all bumped
+/// together).
+const HF_BASE_URL: &str =
+    "https://huggingface.co/screenpipe/pii-text-redactor/resolve/main";
+
+/// File-by-file SHA-256 manifest for v3. Verified after every download
+/// before landing the file at its final path. If a future training run
+/// produces a new best, bump [`OPF_TEXT_VERSION`], re-publish to HF,
+/// update these constants. Note: the worker is destructive-only and
+/// does NOT re-redact already-processed rows, so a model-version bump
+/// only takes effect for newly-captured text going forward.
+const V3_FILES: &[(&str, &str)] = &[
+    (
+        "config.json",
+        "48cd9b76d5684c445cccd86d2d3cd9887eb0136505f9e1b35c2fd2c5a3707885",
+    ),
+    (
+        "model.safetensors",
+        "4be4d5657db2fa72d7b6190949da334053c09ba0a7c2dffe69d65c3585f38bc8",
+    ),
+];
 
 pub struct OpfAdapter {
     inner: opf::Redactor,
@@ -104,6 +130,118 @@ impl OpfAdapter {
     pub fn load_default() -> Result<Self, RedactError> {
         Self::load(OpfConfig::default())
     }
+
+    /// Async constructor: download the checkpoint from HuggingFace
+    /// (~2.8 GB, first-run only) and load it. Idempotent — returns
+    /// instantly when files are already present with matching
+    /// SHA-256s. Recommended call site for production.
+    pub async fn load_or_download(cfg: OpfConfig) -> Result<Self, RedactError> {
+        ensure_checkpoint_present(&cfg.model_dir).await?;
+        Self::load(cfg)
+    }
+
+    /// Download to the default location and load. One-shot
+    /// convenience for the typical desktop install path.
+    pub async fn load_or_download_default() -> Result<Self, RedactError> {
+        Self::load_or_download(OpfConfig::default()).await
+    }
+}
+
+/// Make sure `config.json` + `model.safetensors` are present at
+/// `model_dir` with the SHA-256s pinned in [`V3_FILES`]. Idempotent.
+/// Atomic semantics: each download lands at `<file>.partial`, gets
+/// verified, then renames over `<file>`. A killed process leaves at
+/// most a `.partial` that the next call cleans up.
+async fn ensure_checkpoint_present(model_dir: &Path) -> Result<(), RedactError> {
+    if model_dir.exists() && V3_FILES.iter().all(|(name, sha)| {
+        let p = model_dir.join(name);
+        p.exists() && sha256_matches_file(&p, sha).unwrap_or(false)
+    }) {
+        return Ok(());
+    }
+
+    tokio::fs::create_dir_all(model_dir).await.map_err(|e| {
+        RedactError::Runtime(format!("mkdir {}: {e}", model_dir.display()))
+    })?;
+
+    for (name, expected_sha) in V3_FILES {
+        let dst = model_dir.join(name);
+        if dst.exists() && sha256_matches_file(&dst, expected_sha).unwrap_or(false) {
+            continue;
+        }
+        download_one(name, expected_sha, &dst).await?;
+    }
+    Ok(())
+}
+
+async fn download_one(
+    name: &str,
+    expected_sha: &str,
+    dst: &Path,
+) -> Result<(), RedactError> {
+    let url = format!("{HF_BASE_URL}/{name}");
+    let tmp = dst.with_extension("partial");
+    let _ = tokio::fs::remove_file(&tmp).await;
+
+    tracing::info!(
+        url = %url,
+        target = %dst.display(),
+        "downloading {name} (first-run only)"
+    );
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| RedactError::Runtime(format!("opf {name} GET: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(RedactError::Runtime(format!(
+            "opf {name} returned {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| RedactError::Runtime(format!("opf {name} body: {e}")))?;
+
+    let actual = hex_sha256(&bytes);
+    if actual != expected_sha {
+        return Err(RedactError::Runtime(format!(
+            "opf {name} checksum mismatch: got {actual}, want {expected_sha}"
+        )));
+    }
+
+    tokio::fs::write(&tmp, &bytes)
+        .await
+        .map_err(|e| RedactError::Runtime(format!("opf {name} write tmp: {e}")))?;
+    tokio::fs::rename(&tmp, dst)
+        .await
+        .map_err(|e| RedactError::Runtime(format!("opf {name} rename: {e}")))?;
+    tracing::info!(
+        target = %dst.display(),
+        bytes = bytes.len(),
+        "{name} ready"
+    );
+    Ok(())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+fn sha256_matches_file(path: &Path, expected: &str) -> Result<bool, RedactError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| RedactError::Runtime(format!("read {}: {e}", path.display())))?;
+    Ok(hex_sha256(&bytes) == expected)
 }
 
 fn map_label(l: opf::SpanLabel) -> SpanLabel {

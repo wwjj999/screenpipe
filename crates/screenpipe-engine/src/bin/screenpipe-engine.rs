@@ -1496,10 +1496,13 @@ async fn main() -> anyhow::Result<()> {
     // The capture path is unaffected either way.
     if record_args.async_pii_redaction {
         use screenpipe_redact::{
-            adapters::{opf::OpfAdapter, tinfoil::TinfoilRedactor},
+            adapters::{
+                opf::{OpfAdapter, OpfConfig},
+                tinfoil::TinfoilRedactor,
+            },
             pipeline::{Pipeline, PipelineConfig},
             worker::{Worker, WorkerConfig, ALL_TARGET_TABLES},
-            RedactError, Redactor,
+            Redactor,
         };
         use std::sync::Arc;
 
@@ -1509,55 +1512,56 @@ async fn main() -> anyhow::Result<()> {
         // structural PII deterministically and on-device. AI step
         // resolves to:
         //   1. local opf-rs (candle, ~74 ms p50 on Mac CPU, 41 ms on
-        //      Metal) when the v3 checkpoint is staged at
-        //      ~/.screenpipe/models/opf-v3/
+        //      Metal). First run downloads ~2.8 GB from
+        //      huggingface.co/screenpipe/pii-text-redactor and verifies
+        //      SHA-256 before landing at ~/.screenpipe/models/opf-v3/.
+        //      Spawned off the boot path so a slow first-run pull
+        //      doesn't block the engine.
         //   2. Tinfoil confidential-compute enclave when TINFOIL_*
-        //      env vars are set
+        //      env vars are set and local opf-rs is unavailable.
         //   3. regex-only otherwise (still destructive — overwrites
-        //      regex-redacted text into the source columns)
-        let pipeline = match OpfAdapter::load_default() {
-            Ok(adapter) => {
-                info!("text-PII AI step: local opf-rs (candle)");
-                let ai: Arc<dyn Redactor> = Arc::new(adapter);
-                Pipeline::regex_then_ai(ai, PipelineConfig::default())
-            }
-            Err(RedactError::Unavailable(msg)) => {
-                if std::env::var("TINFOIL_API_KEY").is_ok()
-                    || std::env::var("TINFOIL_BASE_URL").is_ok()
-                {
-                    info!("text-PII AI step: tinfoil enclave (local opf-rs unavailable: {msg})");
-                    let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+        //      regex-redacted text into the source columns).
+        let pool = db.pool.clone();
+        tokio::spawn(async move {
+            info!(
+                "fetching local OPF v3 checkpoint (~2.8 GB on first run, cached at \
+                 ~/.screenpipe/models/opf-v3/)"
+            );
+            let pipeline = match OpfAdapter::load_or_download(OpfConfig::default()).await {
+                Ok(adapter) => {
+                    info!("text-PII AI step: local opf-rs (candle)");
+                    let ai: Arc<dyn Redactor> = Arc::new(adapter);
                     Pipeline::regex_then_ai(ai, PipelineConfig::default())
-                } else {
-                    tracing::warn!(
-                        "text-PII AI step disabled — local opf-rs unavailable ({msg}) and no \
-                         TINFOIL_* env vars set. Worker will run regex-only. Stage the OPF v3 \
-                         checkpoint at ~/.screenpipe/models/opf-v3/ to enable on-device AI \
-                         redaction."
-                    );
-                    Pipeline::regex_only()
                 }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "text-PII AI step failed to load local opf-rs ({e}); falling back to \
-                     regex-only worker"
-                );
-                Pipeline::regex_only()
-            }
-        };
-        let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
+                Err(e) => {
+                    if std::env::var("TINFOIL_API_KEY").is_ok()
+                        || std::env::var("TINFOIL_BASE_URL").is_ok()
+                    {
+                        info!("text-PII AI step: tinfoil enclave (local opf-rs unavailable: {e})");
+                        let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+                        Pipeline::regex_then_ai(ai, PipelineConfig::default())
+                    } else {
+                        tracing::warn!(
+                            "text-PII AI step disabled — local opf-rs unavailable ({e}) and no \
+                             TINFOIL_* env vars set. Worker will run regex-only."
+                        );
+                        Pipeline::regex_only()
+                    }
+                }
+            };
+            let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
 
-        let worker_cfg = WorkerConfig {
-            tables: ALL_TARGET_TABLES.to_vec(),
-            ..Default::default()
-        };
-        let _worker_handle = Worker::new(db.pool.clone(), pipeline_arc, worker_cfg).spawn();
-        // The worker runs for the lifetime of the engine. We don't
-        // join its handle — when the process exits the runtime
-        // tears down the task. If we ever want graceful shutdown
-        // (drain in-flight HTTP calls), wire `_worker_handle` into
-        // the shutdown_tx flow.
+            let worker_cfg = WorkerConfig {
+                tables: ALL_TARGET_TABLES.to_vec(),
+                ..Default::default()
+            };
+            let _worker_handle = Worker::new(pool, pipeline_arc, worker_cfg).spawn();
+            // The worker runs for the lifetime of the engine. We don't
+            // join its handle — when the process exits the runtime
+            // tears down the task. If we ever want graceful shutdown
+            // (drain in-flight HTTP calls), wire `_worker_handle` into
+            // the shutdown_tx flow.
+        });
     }
 
     // Image-PII reconciliation worker (issue #3185 follow-up).
