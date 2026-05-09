@@ -41,6 +41,30 @@ lazy_static! {
         // Stripe keys and secrets (sk_live_, sk_test_, pk_live_, pk_test_, whsec_, rk_live_, rk_test_)
         (Regex::new(r"\b(?:sk_live|sk_test|pk_live|pk_test|whsec|rk_live|rk_test)_[A-Za-z0-9]{10,}").unwrap(), "STRIPE_KEY"),
 
+        // Anthropic API keys (sk-ant-api03-..., sk-ant-admin01-...). The
+        // user-visible reveal pane on platform.claude.com/settings/keys
+        // shows the full secret in plaintext — common screenpipe failure
+        // surface. Note hyphen separator (NOT underscore like Stripe).
+        (Regex::new(r"\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{40,}").unwrap(), "ANTHROPIC_KEY"),
+
+        // OpenAI API keys (sk-..., sk-proj-...). Modern OpenAI keys are
+        // base58-shaped; legacy format kept for back-compat.
+        (Regex::new(r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{40,}\b").unwrap(), "OPENAI_KEY"),
+
+        // Google API keys / Cloud / GenerativeAI. Fixed-length 39 chars.
+        (Regex::new(r"\bAIza[A-Za-z0-9_-]{35}\b").unwrap(), "GOOGLE_API_KEY"),
+
+        // Hugging Face access tokens (hf_..., 37 chars total).
+        (Regex::new(r"\bhf_[A-Za-z0-9]{34}\b").unwrap(), "HUGGINGFACE_TOKEN"),
+
+        // GitHub modern PAT/OAuth/server/user tokens (ghp_, gho_, ghu_,
+        // ghs_, ghr_) — 36-40 chars. Existing legacy 40-hex SHA path
+        // doesn't catch these.
+        (Regex::new(r"\bgh[pousr]_[A-Za-z0-9]{36,40}\b").unwrap(), "GITHUB_TOKEN"),
+
+        // Cloudflare API tokens (40 base64-url chars after "v1.0-").
+        (Regex::new(r"\bv1\.0-[A-Za-z0-9_-]{40,}\b").unwrap(), "CLOUDFLARE_TOKEN"),
+
         // Supabase keys (sb_publishable_, sb_secret_, service_role key patterns)
         (Regex::new(r"\bsb_(?:publishable|secret)_[A-Za-z0-9_-]{5,}").unwrap(), "SUPABASE_KEY"),
 
