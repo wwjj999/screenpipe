@@ -464,6 +464,35 @@ jobs:
         if: matrix.os_type == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # `tauri.windows.conf.json` bundles `onnxruntime*\lib\onnxruntime.dll`
+      # as a Tauri resource. Without this file in place at build time,
+      # tauri_build::build() inside the screenpipe-app build script panics
+      # with `glob pattern ... didn't match any files`, killing the cargo
+      # build before it can even compile our crate. The ORT setup that used
+      # to live here was removed in d62360bc4 (Windows ARM64 PR); v2.4.165
+      # only succeeded because a stale rust-cache / artifacts cache still
+      # contained the directory. Re-add the download so we don't depend on
+      # cache hits for a load-bearing path. release-cli.yml has the same
+      # step; keep them in sync if the pinned ORT version moves.
+      - name: Download ONNX Runtime
+        if: matrix.os_type == 'windows'
+        shell: pwsh
+        run: |
+          if ('${{ matrix.target }}' -eq 'aarch64-pc-windows-msvc') {
+            $arch = 'arm64'
+          } else {
+            $arch = 'x64'
+          }
+          $version = '1.19.2'
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/onnxruntime-win-$arch-$version.zip"
+          $zipFile = "onnxruntime-win-$arch-$version.zip"
+          $extractDir = "apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-$arch-$version"
+          Invoke-WebRequest -Uri $url -OutFile $zipFile
+          if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+          7z x $zipFile -o"apps/screenpipe-app-tauri/src-tauri/" -y
+          Write-Host "ONNX Runtime extracted to $extractDir"
+          Get-ChildItem "$extractDir/lib" | ForEach-Object { Write-Host $_.Name }
+
       - name: Install Ninja (ARM64)
         if: matrix.os_type == 'windows' && matrix.target == 'aarch64-pc-windows-msvc'
         shell: powershell
