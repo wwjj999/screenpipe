@@ -485,25 +485,55 @@ impl ServerCore {
         let use_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
 
         if config.async_pii_redaction {
+            use screenpipe_redact::adapters::opf::OpfAdapter;
             use screenpipe_redact::adapters::tinfoil::TinfoilRedactor;
             use screenpipe_redact::pipeline::{Pipeline, PipelineConfig};
             use screenpipe_redact::worker::{Worker, WorkerConfig, ALL_TARGET_TABLES};
-            use screenpipe_redact::Redactor;
+            use screenpipe_redact::{RedactError, Redactor};
 
-            // Today: regardless of `pii_backend`, the text "AI" step
-            // is the Tinfoil enclave because the local OPF ONNX
-            // export is still landing (see PR description). The flag
-            // is here so flipping the enclave OFF on the local mode
-            // is a one-line change once OnnxRedactor is ready.
-            let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+            // Backend selection for the text "AI" step:
+            //   - "local"   → on-device candle OPF v3 (opf-rs). Falls
+            //                 back to regex-only if the 2.8 GB
+            //                 checkpoint isn't on disk yet.
+            //   - "tinfoil" → Tinfoil confidential-compute enclave.
+            //
             // The worker is destructive-only: it overwrites the source
             // columns (`text` / `transcription` / `text_content` /
             // `accessibility_text`) with the redacted text and stamps
             // `*_redacted_at`. That's what the user-facing "AI PII
             // removal" toggle means. The 20260507 migration drops the
             // dead duplicate columns the old non-destructive mode used.
-            info!("starting async text-PII reconciliation worker (backend={backend})");
-            let pipeline = Pipeline::regex_then_ai(ai, PipelineConfig::default());
+            let pipeline = if use_tinfoil {
+                info!("starting async text-PII reconciliation worker (backend=tinfoil)");
+                let ai: Arc<dyn Redactor> = Arc::new(TinfoilRedactor::from_env());
+                Pipeline::regex_then_ai(ai, PipelineConfig::default())
+            } else {
+                match OpfAdapter::load_default() {
+                    Ok(adapter) => {
+                        info!(
+                            "starting async text-PII reconciliation worker (backend=local, opf-rs)"
+                        );
+                        let ai: Arc<dyn Redactor> = Arc::new(adapter);
+                        Pipeline::regex_then_ai(ai, PipelineConfig::default())
+                    }
+                    Err(RedactError::Unavailable(msg)) => {
+                        warn!(
+                            "OPF checkpoint not staged ({msg}); running text-PII worker in \
+                             regex-only mode. Drop the v3 checkpoint at \
+                             ~/.screenpipe/models/opf-v3/ to enable AI redaction, or switch \
+                             backend to 'tinfoil' in Settings → Privacy → AI PII removal."
+                        );
+                        Pipeline::regex_only()
+                    }
+                    Err(e) => {
+                        warn!(
+                            "failed to load local OPF redactor ({e}); falling back to regex-only \
+                             text-PII worker"
+                        );
+                        Pipeline::regex_only()
+                    }
+                }
+            };
             let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
             let cfg = WorkerConfig {
                 tables: ALL_TARGET_TABLES.to_vec(),
