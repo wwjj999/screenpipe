@@ -506,10 +506,6 @@ impl RecordArgs {
             async_image_pii_redaction: self.async_image_pii_redaction,
             pii_backend: self.pii_backend.clone(),
             filter_music: self.filter_music,
-            #[allow(deprecated)]
-            enable_input_capture: true,
-            #[allow(deprecated)]
-            enable_accessibility: true,
             audio_transcription_engine: engine_str.to_string(),
             transcription_mode: mode_str.to_string(),
             audio_devices: self.audio_device.clone(),

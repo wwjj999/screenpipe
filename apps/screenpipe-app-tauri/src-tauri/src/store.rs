@@ -749,7 +749,6 @@ Rules:
                 monitor_ids: vec!["default".to_string()],
                 audio_devices: vec!["default".to_string()],
                 use_pii_removal: true,
-                vad_sensitivity: "medium".to_string(),
                 analytics_id: uuid::Uuid::new_v4().to_string(),
                 ignored_windows,
                 ..screenpipe_config::RecordingSettings::default()
@@ -937,12 +936,6 @@ impl SettingsStore {
             .filter(|s| !s.trim().is_empty())
             .or_else(|| self.user.name.clone().filter(|s| !s.trim().is_empty()))
             .or_else(|| self.user.email.clone().filter(|s| !s.trim().is_empty()));
-        // Legacy fields — always true, no-op but kept for serde compat
-        #[allow(deprecated)]
-        {
-            settings.enable_input_capture = true;
-            settings.enable_accessibility = true;
-        }
         settings
     }
 

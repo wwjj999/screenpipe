@@ -455,7 +455,6 @@ async fn main() -> anyhow::Result<()> {
                     map.insert("use_pii_removal".into(), json!(record_args.use_pii_removal));
                     map.insert("disable_vision".into(), json!(record_args.disable_vision));
                     map.insert("vad_engine".into(), json!("Silero"));
-                    // enable_input_capture / enable_accessibility always true (removed as settings)
                     map.insert("enable_sync".into(), json!(record_args.enable_sync));
                     map.insert(
                         "sync_interval_secs".into(),

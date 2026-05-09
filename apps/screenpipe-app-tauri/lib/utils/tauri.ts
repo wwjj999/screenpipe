@@ -1475,15 +1475,11 @@ audioChunkDuration: number;
  * Empty string or "default" means not configured.
  * Kept as String (not Option) to match existing store.bin schema.
  */
-deepgramApiKey: string; 
-/**
- * VAD sensitivity level: "low", "medium", "high".
- */
-vadSensitivity: string; 
+deepgramApiKey: string;
 /**
  * Filter music-dominant audio before transcription using spectral analysis.
  */
-filterMusic: boolean; 
+filterMusic: boolean;
 /**
  * Maximum batch duration in seconds for batch transcription.
  * None = use engine-aware defaults (Deepgram=5000s, OpenAI=3000s, Whisper=600s).
@@ -1552,16 +1548,11 @@ disableClipboardCapture?: boolean;
  * Continue recording audio when the screen is locked.
  * Default: false (audio pauses when screen is locked to save resources).
  */
-recordWhileLocked?: boolean; 
-/**
- * Automatically append text typed during a meeting to the meeting's note
- * when the meeting ends. Groups typed text by app/window context.
- */
-appendTypedTextToMeetingNotes?: boolean; 
+recordWhileLocked?: boolean;
 /**
  * Languages for transcription (ISO 639-1 codes).
  */
-languages: string[]; 
+languages: string[];
 /**
  * Redact personally identifiable information from transcriptions.
  */
@@ -1668,24 +1659,12 @@ analyticsEnabled: boolean;
 /**
  * Persistent analytics ID (UUID, stable across sessions).
  */
-analyticsId: string; 
-/**
- * Legacy: input capture is always enabled. Kept for serde compat with
- * existing store.bin files; deserialized but ignored.
- * @deprecated input capture is always enabled; will be removed
- */
-enableInputCapture?: boolean; 
-/**
- * Legacy: accessibility capture is always enabled. Kept for serde compat
- * with existing store.bin files; deserialized but ignored.
- * @deprecated accessibility capture is always enabled; will be removed
- */
-enableAccessibility?: boolean; 
+analyticsId: string;
 /**
  * Enable AI workflow event detection (cloud feature, requires subscription).
  * When enabled, classifies desktop activity and triggers event-based pipes.
  */
-enableWorkflowEvents?: boolean; 
+enableWorkflowEvents?: boolean;
 /**
  * Detected hardware tier ("high", "mid", "low").
  * Set once on first launch; `None` for existing installs (treated as High).

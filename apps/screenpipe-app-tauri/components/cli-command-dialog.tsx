@@ -130,8 +130,6 @@ export function CliCommandDialog({ settings }: CliCommandDialogProps) {
       settings.languages.forEach((id) => args.push(`--language ${id}`));
     }
 
-    // enableInputCapture and enableAccessibility are always on (no CLI flag needed)
-
     const envVarsStr =
       envVars.length > 0
         ? `${envVars.join(

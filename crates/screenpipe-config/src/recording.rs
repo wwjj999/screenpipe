@@ -99,10 +99,6 @@ pub struct RecordingSettings {
     #[serde(rename = "deepgramApiKey")]
     pub deepgram_api_key: String,
 
-    /// VAD sensitivity level: "low", "medium", "high".
-    #[serde(rename = "vadSensitivity")]
-    pub vad_sensitivity: String,
-
     /// Filter music-dominant audio before transcription using spectral analysis.
     #[serde(rename = "filterMusic")]
     pub filter_music: bool,
@@ -177,11 +173,6 @@ pub struct RecordingSettings {
     /// Default: false (audio pauses when screen is locked to save resources).
     #[serde(rename = "recordWhileLocked", default)]
     pub record_while_locked: bool,
-
-    /// Automatically append text typed during a meeting to the meeting's note
-    /// when the meeting ends. Groups typed text by app/window context.
-    #[serde(rename = "appendTypedTextToMeetingNotes", default = "default_true")]
-    pub append_typed_text_to_meeting_notes: bool,
 
     /// Languages for transcription (ISO 639-1 codes).
     pub languages: Vec<String>,
@@ -295,22 +286,6 @@ pub struct RecordingSettings {
     #[serde(rename = "analyticsId")]
     pub analytics_id: String,
 
-    /// Legacy: input capture is always enabled. Kept for serde compat with
-    /// existing store.bin files; deserialized but ignored.
-    #[serde(rename = "enableInputCapture", default = "default_true")]
-    #[deprecated(note = "input capture is always enabled; will be removed")]
-    pub enable_input_capture: bool,
-
-    /// Legacy: accessibility capture is always enabled. Kept for serde compat
-    /// with existing store.bin files; deserialized but ignored.
-    #[serde(
-        rename = "enableAccessibility",
-        alias = "enableUiEvents",
-        default = "default_true"
-    )]
-    #[deprecated(note = "accessibility capture is always enabled; will be removed")]
-    pub enable_accessibility: bool,
-
     /// Enable AI workflow event detection (cloud feature, requires subscription).
     /// When enabled, classifies desktop activity and triggers event-based pipes.
     #[serde(rename = "enableWorkflowEvents", default)]
@@ -386,7 +361,6 @@ impl Default for RecordingSettings {
             experimental_coreaudio_system_audio: false,
             audio_chunk_duration: 30,
             deepgram_api_key: String::new(),
-            vad_sensitivity: "high".to_string(),
             filter_music: false,
             batch_max_duration_secs: None,
             vocabulary: vec![],
@@ -402,7 +376,6 @@ impl Default for RecordingSettings {
             pause_on_drm_content: false,
             disable_clipboard_capture: false,
             record_while_locked: false,
-            append_typed_text_to_meeting_notes: true,
             languages: vec![],
             use_pii_removal: false,
             async_pii_redaction: false,
@@ -420,10 +393,6 @@ impl Default for RecordingSettings {
             use_chinese_mirror: false,
             analytics_enabled: true,
             analytics_id: String::new(),
-            #[allow(deprecated)]
-            enable_input_capture: true,
-            #[allow(deprecated)]
-            enable_accessibility: true,
             enable_workflow_events: false,
             device_tier: None,
             schedule_enabled: false,

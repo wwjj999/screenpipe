@@ -46,7 +46,6 @@ pub struct RecordingConfig {
     pub pii_backend: String,
     /// Filter music-dominant audio before transcription using spectral analysis
     pub filter_music: bool,
-    // enable_input_capture and enable_accessibility removed — always true
 
     // Engines (typed, not strings)
     pub audio_transcription_engine: AudioTranscriptionEngine,
@@ -182,7 +181,6 @@ impl RecordingConfig {
             async_image_pii_redaction: settings.async_image_pii_redaction,
             pii_backend: settings.pii_backend.clone(),
             filter_music: settings.filter_music,
-            // enable_input_capture / enable_accessibility removed — always true
             enable_workflow_events: settings.enable_workflow_events,
             audio_transcription_engine: engine_str
                 .parse()

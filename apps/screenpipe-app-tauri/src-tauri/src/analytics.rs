@@ -343,10 +343,6 @@ impl AnalyticsManager {
             "setting_monitor_count": get_arr_len("monitorIds"),
             "setting_video_quality": get_str("videoQuality").unwrap_or("balanced"),
 
-            // Element capture / accessibility — always enabled
-            "setting_enable_input_capture": true,
-            "setting_enable_accessibility": true,
-
             // Audio
             "setting_disable_audio": get_bool("disableAudio").unwrap_or(false),
             "setting_audio_device_count": get_arr_len("audioDevices"),

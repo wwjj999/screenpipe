@@ -168,10 +168,6 @@ export type Settings = SettingsStore & {
 	lockVaultShortcut?: string;
 	/** When true, audio devices follow system default and auto-switch on changes */
 	useSystemDefaultAudio?: boolean;
-	/** @deprecated Always true — kept for serde compat */
-	enableInputCapture?: boolean;
-	/** @deprecated Always true — kept for serde compat */
-	enableAccessibility?: boolean;
 	/** Enable AI workflow event detection (cloud, triggers event-based pipes) */
 	enableWorkflowEvents?: boolean;
 	/** Audio transcription scheduling: "realtime" (default) or "batch" (longer chunks for quality) */
@@ -232,8 +228,6 @@ export type Settings = SettingsStore & {
 	experimentalCoreaudioSystemAudio?: boolean;
 	/** Continue recording audio when the screen is locked (default: false) */
 	recordWhileLocked?: boolean;
-	/** Auto-append typed text to meeting notes when a meeting ends */
-	appendTypedTextToMeetingNotes?: boolean;
 	/** Auto-delete local data older than retention days (free alternative to cloud archive) */
 	localRetentionEnabled?: boolean;
 	/** Days to keep data locally before auto-deleting (default: 14) */
@@ -408,7 +402,6 @@ let DEFAULT_SETTINGS: Settings = {
 			ignoredUrls: [],
 			teamFilters: { ignoredWindows: [], includedWindows: [], ignoredUrls: [] },
 
-			vadSensitivity: "medium",
 			analyticsEnabled: true,
 			audioChunkDuration: 30,
 			useChineseMirror: false,
@@ -457,8 +450,6 @@ let DEFAULT_SETTINGS: Settings = {
 				activeConversationId: null,
 				historyEnabled: true,
 			},
-			enableInputCapture: true,
-			enableAccessibility: true,
 			overlayMode: "fullscreen",
 			showOverlayInScreenRecording: false,
 			videoQuality: "balanced",
@@ -471,7 +462,6 @@ let DEFAULT_SETTINGS: Settings = {
 			disableClipboardCapture: false,
 			experimentalCoreaudioSystemAudio: false,
 			recordWhileLocked: false,
-			appendTypedTextToMeetingNotes: true,
 			localRetentionEnabled: false,
 			localRetentionDays: 14,
 			localRetentionMode: "media",

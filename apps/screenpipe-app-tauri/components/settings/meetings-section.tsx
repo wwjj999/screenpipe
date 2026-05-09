@@ -16,10 +16,7 @@ import {
   GitMerge,
   ArrowUpDown,
   Sparkles,
-  Keyboard,
 } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
-import { useSettings } from "@/lib/hooks/use-settings";
 import { showChatWithPrefill } from "@/lib/chat-utils";
 import { localFetch } from "@/lib/api";
 import {
@@ -107,7 +104,6 @@ function MeetingsSkeleton() {
 
 export function MeetingsSection() {
   const { toast } = useToast();
-  const { settings, updateSettings } = useSettings();
   const [meetings, setMeetings] = useState<MeetingRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -424,14 +420,7 @@ export function MeetingsSection() {
   return (
     <div className="space-y-4 h-full flex flex-col">
       <div className="flex items-center justify-between">
-        <label className="flex items-center gap-2 cursor-pointer" title="automatically append everything you typed during a meeting to its notes">
-          <Switch
-            checked={Boolean(settings.appendTypedTextToMeetingNotes ?? true)}
-            onCheckedChange={(checked) => updateSettings({ appendTypedTextToMeetingNotes: checked })}
-          />
-          <Keyboard className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-xs text-muted-foreground">auto-capture typed text</span>
-        </label>
+        <div />
         {loading ? (
           <Skeleton className="h-8 w-28 rounded-md" />
         ) : (
