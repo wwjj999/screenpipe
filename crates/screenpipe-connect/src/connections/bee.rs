@@ -200,10 +200,7 @@ mod tests {
         // its own via build_client_for.
         let result = Bee.test(&reqwest::Client::new(), &creds, None).await;
         let msg = result.expect("Bee.test should succeed");
-        assert!(
-            msg.starts_with("connected"),
-            "unexpected message: {msg}"
-        );
+        assert!(msg.starts_with("connected"), "unexpected message: {msg}");
         eprintln!("live_api_smoke: {msg}");
     }
 }
