@@ -367,19 +367,33 @@ fn read_cookies(source: &KeychainEntry, host: &str) -> Result<Vec<Cookie>, Strin
         .map_err(|e| format!("query: {e}"))?;
 
     let mut cookies = Vec::new();
+    let mut row_count = 0usize;
+    let mut decrypt_failed = 0usize;
+    let mut row_decode_failed = 0usize;
+    let mut sample_enc_prefix: Option<String> = None;
     for row in rows {
+        row_count += 1;
         match row {
             Ok((name, plain_val, enc_val, host_key, path, secure, http_only, expires_utc, ss)) => {
                 let value = if enc_val.is_empty() {
                     plain_val
                 } else {
+                    if sample_enc_prefix.is_none() {
+                        let n = enc_val.len().min(3);
+                        sample_enc_prefix = Some(
+                            enc_val[..n]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                        );
+                    }
                     match decrypt_v10(&enc_val, &key) {
                         Some(v) => v,
                         None => {
                             // Skip individual decrypt failures rather
                             // than abort the whole batch — one corrupt
                             // row shouldn't deny the agent every cookie.
-                            debug!(name, "decrypt failed, skipping");
+                            decrypt_failed += 1;
                             continue;
                         }
                     }
@@ -395,9 +409,19 @@ fn read_cookies(source: &KeychainEntry, host: &str) -> Result<Vec<Cookie>, Strin
                     same_site: ss,
                 });
             }
-            Err(e) => debug!("row decode: {e}"),
+            Err(_) => row_decode_failed += 1,
         }
     }
+    info!(
+        source = source.name,
+        host,
+        rows = row_count,
+        decrypted = cookies.len(),
+        decrypt_failed,
+        row_decode_failed,
+        first_enc_prefix = sample_enc_prefix.as_deref().unwrap_or("none"),
+        "owned-browser cookies: source done"
+    );
     Ok(cookies)
 }
 
