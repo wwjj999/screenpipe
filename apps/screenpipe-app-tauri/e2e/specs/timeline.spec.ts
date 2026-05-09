@@ -6,13 +6,22 @@ import { existsSync } from "node:fs";
 import { saveScreenshot } from "../helpers/screenshot-utils.js";
 import { spawnTransientForegroundApp } from "../helpers/seed-capture-activity.js";
 import { openHomeWindow, waitForAppReady, t } from "../helpers/test-utils.js";
+import { E2E_SEED_FLAGS } from "../helpers/app-launcher.js";
 
 describe("Timeline", function () {
   this.timeout(240_000);
 
   let cleanupTransientApp: (() => void) | null = null;
 
-  before(async () => {
+  before(async function () {
+    // The timeline spec walks frames, which only exist if SCK + OCR are
+    // running. The launcher seeds `no-recording` by default so the app
+    // boots without Screen Recording / Microphone TCC; in that mode the
+    // capture pipeline is intentionally not started and there will never
+    // be frames to assert on. Skip cleanly instead of timing out.
+    if (E2E_SEED_FLAGS.split(",").map((s) => s.trim()).includes("no-recording")) {
+      this.skip();
+    }
     await waitForAppReady();
   });
 

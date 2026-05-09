@@ -1308,10 +1308,22 @@ async fn main() {
             // Note: StoreBuilder handles file creation internally — pre-creating
             // store.bin here caused TOCTOU race conditions ("File exists" os error 17).
             // Use unwrap_or_default to prevent crashes from corrupted stores
-            let store = store::init_store(&app.handle()).unwrap_or_else(|e| {
+            let mut store = store::init_store(&app.handle()).unwrap_or_else(|e| {
                 error!("Failed to init settings store, using defaults: {}", e);
                 store::SettingsStore::default()
             });
+
+            // E2E seed: when SCREENPIPE_E2E_SEED contains "no-recording", flip
+            // disable_vision + disable_audio so the e2e harness can drive the
+            // app without granting Screen Recording / Microphone TCC. The
+            // server (DB + HTTP) still boots; only SCK + audio capture skip.
+            // See get_e2e_seed_flags above for parsing.
+            if get_e2e_seed_flags().iter().any(|f| f == "no-recording") {
+                store.recording.disable_audio = true;
+                store.recording.disable_vision = true;
+                info!("E2E seed: recording disabled (vision + audio)");
+            }
+
             app.manage(store.clone());
 
             // Set Chinese HuggingFace mirror early — before any model downloads
@@ -1662,8 +1674,15 @@ async fn main() {
                             // Permissions check
                             let permissions_check = permissions::do_permissions_check(false);
                             let disable_audio = store_clone.recording.disable_audio;
+                            let disable_vision = store_clone.recording.disable_vision;
 
-                            if !permissions_check.screen_recording.permitted() {
+                            // Only block server start on missing screen-recording
+                            // perms when vision is actually requested. With
+                            // `disable_vision = true` (set by E2E seed
+                            // `no-recording`, or by user choice in the future)
+                            // the SCK code path is never exercised, so we can
+                            // boot the server + HTTP API + DB without TCC.
+                            if !disable_vision && !permissions_check.screen_recording.permitted() {
                                 warn!("Screen recording permission not granted: {:?}. Server will not start.", permissions_check.screen_recording);
                                 is_starting_clone.store(false, std::sync::atomic::Ordering::SeqCst);
                                 return;

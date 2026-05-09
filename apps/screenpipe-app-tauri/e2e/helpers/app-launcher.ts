@@ -47,7 +47,18 @@ function killPort(port: number): void {
 
 // e2e/helpers/ → ../.. = app root (Bun runs from source, no dist)
 const APP_ROOT = resolve(__dirname, '../..');
-const E2E_SEED_FLAGS = 'onboarding';
+// `onboarding` marks the onboarding store complete so the app drops straight
+// into the home window. `no-recording` disables vision + audio so the server
+// boots without Screen Recording / Microphone TCC — without it, an unsigned
+// debug build (`--no-sign`) on a host without granted permissions would have
+// the server early-return at the permission gate and `/health` would never
+// respond. See get_e2e_seed_flags + the recording boot path in main.rs.
+//
+// Override with `SCREENPIPE_E2E_SEED=onboarding` (or any custom value) when
+// running on a host that DOES have TCC granted and you want to exercise the
+// real capture pipeline. The same env var is read by specs (e.g. timeline)
+// to skip when recording is off.
+export const E2E_SEED_FLAGS = process.env.SCREENPIPE_E2E_SEED ?? 'onboarding,no-recording';
 
 export function getAppPath(): string {
   const base = resolve(APP_ROOT, 'src-tauri/target/debug');
