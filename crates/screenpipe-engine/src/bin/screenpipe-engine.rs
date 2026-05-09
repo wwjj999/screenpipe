@@ -1565,39 +1565,63 @@ async fn main() -> anyhow::Result<()> {
 
     // Image-PII reconciliation worker (issue #3185 follow-up).
     // Independent of the text worker — users can toggle either one
-    // without the other. Requires the rfdetr_v8.onnx model present
-    // and at least one of the `onnx-*` cargo features built.
+    // without the other. Requires the rfdetr_v9 model present and at
+    // least one of the `onnx-*` or `mlx-mac` cargo features built.
     if record_args.async_image_pii_redaction {
         use screenpipe_redact::adapters::rfdetr::{RfdetrConfig, RfdetrRedactor};
         use screenpipe_redact::image::worker::{ImageWorker, ImageWorkerConfig};
         use screenpipe_redact::ImageRedactor;
         use std::sync::Arc;
 
-        // load_or_download fetches the ONNX from
+        // Prefer the MLX runtime on Mac when the safetensors weights
+        // are present (~6× faster than the CoreML EP path). Falls
+        // through to the ONNX adapter otherwise — load_or_download
+        // fetches rfdetr_v9.onnx from
         // huggingface.co/screenpipe/pii-image-redactor on first run
         // (~108 MB), verifies SHA-256, caches at
-        // ~/.screenpipe/models/rfdetr_v8.onnx. Subsequent starts are
-        // instant.
-        match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
-            Ok(detector) => {
-                info!(
-                    "starting async image-PII reconciliation worker (destructive overwrite of source JPGs)"
-                );
-                let cfg = ImageWorkerConfig::default();
-                let detector_arc = Arc::new(detector) as Arc<dyn ImageRedactor>;
-                let _img_handle = ImageWorker::new(db.pool.clone(), detector_arc, cfg).spawn();
+        // ~/.screenpipe/models/. Subsequent starts are instant.
+        #[allow(unused_mut)]
+        let mut detector_arc: Option<Arc<dyn ImageRedactor>> = None;
+        #[cfg(all(feature = "rfdetr-mlx", target_os = "macos"))]
+        {
+            use screenpipe_redact::adapters::rfdetr_mlx::{RfdetrMlxConfig, RfdetrMlxRedactor};
+            match RfdetrMlxRedactor::load(RfdetrMlxConfig::default()) {
+                Ok(d) => {
+                    info!("image-PII detector: rfdetr-mlx (Apple Silicon GPU)");
+                    detector_arc = Some(Arc::new(d) as Arc<dyn ImageRedactor>);
+                }
+                Err(e) => {
+                    tracing::info!(
+                        "rfdetr-mlx unavailable ({e}); falling back to ONNX adapter"
+                    );
+                }
             }
-            Err(e) => {
-                // Loud-but-non-fatal: capture continues; user gets an
-                // explicit "model missing or download failed" message
-                // in the log, and the regular text redactor (if
-                // enabled) keeps running.
-                tracing::warn!(
-                    "image-PII redaction enabled but couldn't load model; skipping: {e}. \
-                     check network reachability to huggingface.co or pre-stage \
-                     rfdetr_v8.onnx at ~/.screenpipe/models/."
-                );
+        }
+        if detector_arc.is_none() {
+            match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
+                Ok(d) => {
+                    info!("image-PII detector: rfdetr (ONNX Runtime)");
+                    detector_arc = Some(Arc::new(d) as Arc<dyn ImageRedactor>);
+                }
+                Err(e) => {
+                    // Loud-but-non-fatal: capture continues; user gets
+                    // an explicit "model missing or download failed"
+                    // message in the log, and the regular text
+                    // redactor (if enabled) keeps running.
+                    tracing::warn!(
+                        "image-PII redaction enabled but couldn't load model; skipping: {e}. \
+                         check network reachability to huggingface.co or pre-stage \
+                         rfdetr_v9.onnx at ~/.screenpipe/models/."
+                    );
+                }
             }
+        }
+        if let Some(detector) = detector_arc {
+            info!(
+                "starting async image-PII reconciliation worker (destructive overwrite of source JPGs)"
+            );
+            let cfg = ImageWorkerConfig::default();
+            let _img_handle = ImageWorker::new(db.pool.clone(), detector, cfg).spawn();
         }
     }
 

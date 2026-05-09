@@ -64,6 +64,13 @@ onnx-directml = ["onnx-cpu", "ort/directml"]
 # default `metal` feature.
 opf-text = ["dep:opf"]
 
+# Mac: rfdetr image PII via mlx-rs (Apple Silicon-only, ~6× faster
+# than CoreML EP for this model). Picks up the same HF model file as
+# `onnx-coreml` but converts to safetensors at first run via
+# `screenpipe-rfdetr-mlx`. Mutually compatible with onnx-* — the
+# engine prefers MLX on Mac when both are present.
+mlx-mac = ["dep:screenpipe-rfdetr-mlx"]
+
 [dependencies.ort]
 version = "=2.0.0-rc.10"
 features = ["ndarray"]
@@ -98,3 +105,10 @@ git = "https://github.com/screenpipe/opf-rs"
 rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
 optional = true
 features = ["metal"]
+
+# MLX-based rfdetr runtime — only meaningful on Apple Silicon. On
+# Linux/Windows the dep is an empty optional, the `mlx-mac` feature is
+# never enabled, and nothing pulls mlx-rs.
+[target.'cfg(target_os = "macos")'.dependencies.screenpipe-rfdetr-mlx]
+path = "../screenpipe-rfdetr-mlx"
+optional = true

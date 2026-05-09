@@ -160,6 +160,10 @@ apple-intelligence = ["dep:screenpipe-apple-intelligence"]
 qwen3-asr = ["screenpipe-audio/qwen3-asr"]
 parakeet = ["screenpipe-audio/parakeet"]
 parakeet-mlx = ["screenpipe-audio/parakeet-mlx"]
+# Image-PII detector via MLX (Apple Silicon-only). Off by default;
+# Mac release builds opt in to pick up the ~6× speedup over the ONNX
+# CoreML EP path.
+rfdetr-mlx = ["screenpipe-redact/mlx-mac"]
 jemalloc = ["tikv-jemallocator"]
 
 [[bin]]
@@ -187,6 +191,6 @@ cidre = { git = "https://github.com/yury/cidre.git", features = ["ax", "ns", "av
 tracing-oslog = { workspace = true }
 
 [package.metadata.cargo-machete]
-# screenpipe-redact: workspace dep added for async PII reconciliation (PR #3188);
-# wiring into engine lands in a follow-up. Cargo compiles it for the workspace either way.
-ignored = ["screenpipe-redact"]
+# screenpipe-redact is wired into the engine binary (image-PII
+# reconciliation worker, screenpipe-engine.rs:1571).
+ignored = []

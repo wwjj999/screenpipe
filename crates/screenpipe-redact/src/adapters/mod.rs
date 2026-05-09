@@ -49,3 +49,4 @@ pub mod onnx;
 pub mod opf;
 
 pub mod rfdetr;
+pub mod rfdetr_mlx;
