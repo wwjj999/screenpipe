@@ -77,7 +77,7 @@ async fn fetch_models_from_gateway(
             let has_vision = best_for
                 .map(|arr| {
                     arr.iter()
-                        .any(|v| v.as_str().map_or(false, |s| s.contains("vision")))
+                        .any(|v| v.as_str().is_some_and(|s| s.contains("vision")))
                 })
                 .unwrap_or(false);
             let input = if has_vision {

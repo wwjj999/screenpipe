@@ -113,14 +113,14 @@ impl DbConfig {
                 cache_size_kb: 32_000,        // 32 MB
                 read_pool_max: 12,
                 read_pool_min: 2,
-                write_pool_max: 3,
+                write_pool_max: 6,
             },
             DeviceTier::Low => Self {
                 mmap_size: 32 * 1024 * 1024, // 32 MB
                 cache_size_kb: 8_000,        // 8 MB
                 read_pool_max: 5,
                 read_pool_min: 1,
-                write_pool_max: 2,
+                write_pool_max: 4,
             },
         }
     }
@@ -134,7 +134,7 @@ impl Default for DbConfig {
             cache_size_kb: 64_000,        // 64 MB
             read_pool_max: 27,
             read_pool_min: 3,
-            write_pool_max: 3,
+            write_pool_max: 8,
         }
     }
 }

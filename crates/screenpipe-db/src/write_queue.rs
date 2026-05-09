@@ -401,7 +401,7 @@ async fn drain_loop(
                     batch.len()
                 );
             }
-            let notify = RESUME_NOTIFY.get_or_init(|| tokio::sync::Notify::new());
+            let notify = RESUME_NOTIFY.get_or_init(tokio::sync::Notify::new);
             tokio::select! {
                 _ = notify.notified() => {
                     info!("write_queue: resumed after sleep, {} pending", batch.len());
