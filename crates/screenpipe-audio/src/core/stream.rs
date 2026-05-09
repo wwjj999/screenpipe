@@ -296,7 +296,10 @@ impl AudioStream {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     if !join_handle.is_finished() {
-                        warn!(
+                        // Fully-qualified — `use tracing::{error, warn}` above
+                        // is cfg-gated to non-pulseaudio builds, so on linux+
+                        // pulseaudio CI (Release CLI) `warn!` is out of scope.
+                        tracing::warn!(
                             "audio stream thread did not exit within 3s; aborting (potential cpal/CoreAudio wedge)"
                         );
                         join_handle.abort();
