@@ -41,24 +41,28 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 tempfile = "3"
 image = "0.25"
 
-# Optional ONNX-based local-model adapter. Off by default so the crate
-# builds without any heavy ML deps. Each platform feature picks the
-# right execution provider — no CUDA, no Vulkan, no GPU vendor SDK
-# bundling.
+# Optional model adapters. Off by default so the crate builds without
+# any heavy ML deps. Picks the platform-appropriate accelerator.
+#
+# Two independent backends:
+#   - `onnx-*` for the IMAGE PII path (rfdetr_v8, ONNX Runtime via ort)
+#   - `opf-text` for the TEXT PII path (OPF v3 in pure-Rust candle, via
+#     the local `opf-rs` crate at ../../../opf-rs)
 [features]
 default = []
 
-# Enable the local-model adapter at all (CPU-only). Pulls `ort` plus the
-# bundled ONNX Runtime binaries — no separate runtime install needed.
+# Enable the ONNX-based image redactor (rfdetr). CPU-only baseline.
 onnx-cpu = ["dep:ort", "dep:ndarray", "ort/download-binaries"]
-
-# Mac: Apple's CoreML execution provider. Uses Metal + Apple Neural
-# Engine where available. No driver install required for end users.
+# Mac: CoreML execution provider (uses Metal + ANE where available).
 onnx-coreml = ["onnx-cpu", "ort/coreml"]
-
-# Windows: Microsoft DirectML execution provider. Runs on any DX12-capable
-# GPU (Intel iGPU, AMD, NVIDIA, Qualcomm). No CUDA toolkit, no Vulkan SDK.
+# Windows: DirectML EP (any DX12-capable GPU, no CUDA toolkit).
 onnx-directml = ["onnx-cpu", "ort/directml"]
+
+# Enable the candle-based OPF text redactor via the opf-rs crate. Off
+# by default; opt-in for local dev / packaged builds that ship the
+# 2.8 GB checkpoint. Mac builds get Metal acceleration through opf-rs's
+# default `metal` feature.
+opf-text = ["dep:opf"]
 
 [dependencies.ort]
 version = "=2.0.0-rc.10"
@@ -67,4 +71,13 @@ optional = true
 
 [dependencies.ndarray]
 version = "0.16"
+optional = true
+
+# OPF text redactor (pure-Rust candle port; same model as the v3
+# fine-tune on HF). Pinned to a commit so reproducible across CI
+# runners — bump the rev together with the model checkpoint version
+# whenever opf-rs ships a meaningful change.
+[dependencies.opf]
+git = "https://github.com/screenpipe/opf-rs"
+rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
 optional = true
