@@ -2822,9 +2822,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_build_models_json_default_has_screenpipe_provider() {
-        let config = build_models_json(None, None);
+    #[tokio::test]
+    async fn test_build_models_json_default_has_screenpipe_provider() {
+        let config = build_models_json(None, None).await;
         let providers = config["providers"].as_object().unwrap();
         assert!(providers.contains_key("screenpipe"));
         assert_eq!(providers.len(), 1);
@@ -2837,27 +2837,27 @@ mod tests {
         assert!(sp["models"].as_array().unwrap().len() > 0);
     }
 
-    #[test]
-    fn test_build_models_json_with_user_token() {
-        let config = build_models_json(Some("tok_abc123"), None);
+    #[tokio::test]
+    async fn test_build_models_json_with_user_token() {
+        let config = build_models_json(Some("tok_abc123"), None).await;
         let sp = &config["providers"]["screenpipe"];
         assert_eq!(sp["apiKey"], "tok_abc123");
     }
 
-    #[test]
-    fn test_build_models_json_screenpipe_cloud_no_extra_provider() {
+    #[tokio::test]
+    async fn test_build_models_json_screenpipe_cloud_no_extra_provider() {
         let pc = make_provider_config("screenpipe-cloud", "auto");
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         // screenpipe-cloud maps to "" (empty), so only the screenpipe provider is added
         assert_eq!(providers.len(), 1);
         assert!(providers.contains_key("screenpipe"));
     }
 
-    #[test]
-    fn test_build_models_json_openai_adds_second_provider() {
+    #[tokio::test]
+    async fn test_build_models_json_openai_adds_second_provider() {
         let pc = make_provider_config("openai", "gpt-4o");
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         assert_eq!(providers.len(), 2);
         assert!(providers.contains_key("screenpipe"));
@@ -2872,19 +2872,19 @@ mod tests {
         assert_eq!(models[0]["id"], "gpt-4o");
     }
 
-    #[test]
-    fn test_build_models_json_ollama_provider() {
+    #[tokio::test]
+    async fn test_build_models_json_ollama_provider() {
         let pc = make_provider_config("native-ollama", "llama3");
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         assert!(providers.contains_key("ollama"));
         assert_eq!(providers["ollama"]["baseUrl"], "http://localhost:11434/v1");
     }
 
-    #[test]
-    fn test_build_models_json_anthropic_provider() {
+    #[tokio::test]
+    async fn test_build_models_json_anthropic_provider() {
         let pc = make_provider_config("anthropic", "claude-sonnet-4-5");
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         assert!(providers.contains_key("anthropic-byok"));
         assert_eq!(
@@ -2894,35 +2894,35 @@ mod tests {
         assert_eq!(providers["anthropic-byok"]["api"], "anthropic-messages");
     }
 
-    #[test]
-    fn test_build_models_json_custom_with_empty_url_skipped() {
+    #[tokio::test]
+    async fn test_build_models_json_custom_with_empty_url_skipped() {
         // custom provider with empty URL should be skipped (would invalidate schema)
         let pc = make_provider_config("custom", "my-model");
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         assert_eq!(providers.len(), 1); // only screenpipe
         assert!(!providers.contains_key("custom"));
     }
 
-    #[test]
-    fn test_build_models_json_custom_with_url() {
+    #[tokio::test]
+    async fn test_build_models_json_custom_with_url() {
         let mut pc = make_provider_config("custom", "my-model");
         pc.url = "http://my-server:8080/v1".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let providers = config["providers"].as_object().unwrap();
         assert_eq!(providers.len(), 2);
         assert!(providers.contains_key("custom"));
         assert_eq!(providers["custom"]["baseUrl"], "http://my-server:8080/v1");
     }
 
-    #[test]
-    fn test_build_models_json_custom_generic_no_compat_override() {
+    #[tokio::test]
+    async fn test_build_models_json_custom_generic_no_compat_override() {
         // Plain OpenAI-compatible endpoints (Ollama, vLLM, OpenRouter-like)
         // should NOT have compat.maxTokensField set — Pi's auto-detection
         // defaults to max_completion_tokens which works for most of these.
         let mut pc = make_provider_config("custom", "my-model");
         pc.url = "http://localhost:8080/v1".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert!(
             model.get("compat").is_none(),
@@ -2930,11 +2930,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_models_json_azure_openai_forces_max_completion_tokens() {
+    #[tokio::test]
+    async fn test_build_models_json_azure_openai_forces_max_completion_tokens() {
         let mut pc = make_provider_config("custom", "gpt-4o");
         pc.url = "https://myresource.openai.azure.com/openai/deployments/gpt-4o".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert_eq!(
             model["compat"]["maxTokensField"], "max_completion_tokens",
@@ -2942,62 +2942,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_models_json_azure_foundry_forces_max_completion_tokens() {
+    #[tokio::test]
+    async fn test_build_models_json_azure_foundry_forces_max_completion_tokens() {
         let mut pc = make_provider_config("custom", "gpt-5-mini");
         pc.url = "https://myresource.services.ai.azure.com/api/projects/proj".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert_eq!(model["compat"]["maxTokensField"], "max_completion_tokens");
     }
 
-    #[test]
-    fn test_build_models_json_azure_cognitive_services_forces_max_completion_tokens() {
+    #[tokio::test]
+    async fn test_build_models_json_azure_cognitive_services_forces_max_completion_tokens() {
         let mut pc = make_provider_config("custom", "my-deployment");
         pc.url = "https://myresource.cognitiveservices.azure.com/".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert_eq!(model["compat"]["maxTokensField"], "max_completion_tokens");
     }
 
-    #[test]
-    fn test_build_models_json_gpt5_model_forces_max_completion_tokens() {
+    #[tokio::test]
+    async fn test_build_models_json_gpt5_model_forces_max_completion_tokens() {
         // Even on a generic OpenAI-compatible proxy, GPT-5 models require
         // max_completion_tokens. Detect by model ID.
         let mut pc = make_provider_config("custom", "gpt-5");
         pc.url = "https://my-proxy.example.com/v1".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert_eq!(model["compat"]["maxTokensField"], "max_completion_tokens");
     }
 
-    #[test]
-    fn test_build_models_json_o3_model_forces_max_completion_tokens() {
+    #[tokio::test]
+    async fn test_build_models_json_o3_model_forces_max_completion_tokens() {
         let mut pc = make_provider_config("custom", "o3-mini");
         pc.url = "https://my-proxy.example.com/v1".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert_eq!(model["compat"]["maxTokensField"], "max_completion_tokens");
     }
 
-    #[test]
-    fn test_build_models_json_regular_gpt4_no_compat_override() {
+    #[tokio::test]
+    async fn test_build_models_json_regular_gpt4_no_compat_override() {
         // gpt-4 and gpt-4o should NOT be forced — they work with both field names
         // and Pi's default is already max_completion_tokens for non-chutes URLs.
         let mut pc = make_provider_config("custom", "gpt-4o");
         pc.url = "https://my-proxy.example.com/v1".to_string();
-        let config = build_models_json(None, Some(&pc));
+        let config = build_models_json(None, Some(&pc)).await;
         let model = &config["providers"]["custom"]["models"][0];
         assert!(model.get("compat").is_none());
     }
 
-    #[test]
-    fn test_build_models_json_no_stale_providers() {
+    #[tokio::test]
+    async fn test_build_models_json_no_stale_providers() {
         // The key regression test: even if an old models.json had a corrupted
         // provider, build_models_json always produces a clean config with only
         // the providers we explicitly add. This is a pure function so there is
         // no file to corrupt — the test verifies the output shape is always valid.
-        let config = build_models_json(Some("tok"), None);
+        let config = build_models_json(Some("tok"), None).await;
         let providers = config["providers"].as_object().unwrap();
 
         // Only "screenpipe" — no leftover providers

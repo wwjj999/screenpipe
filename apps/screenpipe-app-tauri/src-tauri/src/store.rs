@@ -40,6 +40,131 @@ pub fn resolved_api_auth_key() -> Option<String> {
 /// Magic header for encrypted store.bin files.
 const STORE_MAGIC: &[u8; 8] = b"SPSTORE1";
 
+// ---------------------------------------------------------------------------
+// Settings-loss recovery
+//
+// Goal: a user can never be silently reset to default settings on update.
+// 4 layers, defense in depth:
+//   L1: snapshot `store.bin.last-good` after every successful save (only if
+//       the snapshot has aiPresets — never freeze a degraded state).
+//   L2: at boot, before the Tauri store plugin opens the file, auto-restore
+//       from `.last-good` IFF the current file is degraded (parses but no
+//       aiPresets) AND last-good is healthy. The bad file is moved to
+//       `store.bin.pre-restore-<ts>` for forensics.
+//   L3: refuse `create_new()` over a healthy on-disk file (would otherwise
+//       create a fresh in-memory store that overwrites disk on next save).
+//   L4: stop writing `b"{}"` on encryption-key failures — keep the encrypted
+//       file in place and let the load fail loudly instead.
+// ---------------------------------------------------------------------------
+
+/// Suffix for the most-recent known-healthy snapshot.
+const LAST_GOOD_SUFFIX: &str = "bin.last-good";
+
+/// Did this store JSON parse and contain a non-empty `settings.aiPresets`?
+/// Used as the "is this a real user state" signal — empty presets means the
+/// migration in use-settings.tsx will seed defaults, which is the wipe trigger.
+fn store_json_has_presets(data: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(data)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/settings/aiPresets")
+                .and_then(|p| p.as_array())
+                .map(|a| !a.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// L1 — copy `store.bin` → `store.bin.last-good` if the current file parses
+/// and has aiPresets. Skipped silently otherwise so we never freeze a wiped
+/// state as the recovery source. Called after every successful save.
+pub fn snapshot_last_good(store_path: &Path) {
+    let data = match std::fs::read(store_path) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    if !store_json_has_presets(&data) {
+        return;
+    }
+    let last_good = store_path.with_extension(LAST_GOOD_SUFFIX);
+    if let Err(e) = std::fs::write(&last_good, &data) {
+        tracing::warn!(
+            "snapshot_last_good: failed to write {}: {}",
+            last_good.display(),
+            e
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&last_good, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// L2 — if `store.bin` is degraded (parses but missing aiPresets) and
+/// `.last-good` is healthy, restore it before anything else touches the file.
+/// The bad current file is preserved as `.pre-restore-<UTC ts>` so we have
+/// forensics if a user reports the restore was wrong.
+///
+/// Returns `true` when a restore happened (telemetry hook). Logged loudly so
+/// it shows up in screenpipe-app.YYYY-MM-DD.log.
+pub fn auto_restore_if_wiped(store_path: &Path) -> bool {
+    // Only act on plain-JSON files. Encrypted files are handled by the
+    // decrypt path; we don't want to restore over a still-encrypted blob.
+    let cur = match std::fs::read(store_path) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if cur.len() >= 8 && &cur[..8] == STORE_MAGIC {
+        return false;
+    }
+    if store_json_has_presets(&cur) {
+        return false; // current state is healthy, nothing to do
+    }
+    let last_good = store_path.with_extension(LAST_GOOD_SUFFIX);
+    let Ok(lg) = std::fs::read(&last_good) else {
+        return false;
+    };
+    if !store_json_has_presets(&lg) {
+        return false; // last-good is also wiped (shouldn't happen — L1 guards this)
+    }
+
+    // Move the bad file aside before overwriting it
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let pre_restore = store_path.with_extension(format!("bin.pre-restore-{}", ts));
+    if let Err(e) = std::fs::copy(store_path, &pre_restore) {
+        tracing::warn!(
+            "auto_restore_if_wiped: failed to back up {} to {}: {} — aborting restore",
+            store_path.display(),
+            pre_restore.display(),
+            e
+        );
+        return false;
+    }
+
+    if let Err(e) = std::fs::write(store_path, &lg) {
+        tracing::error!(
+            "auto_restore_if_wiped: failed to restore {} from {}: {}",
+            store_path.display(),
+            last_good.display(),
+            e
+        );
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(store_path, std::fs::Permissions::from_mode(0o600));
+    }
+    tracing::warn!(
+        "auto_restore_if_wiped: restored {} from {} (was missing aiPresets); \
+         pre-restore copy at {}",
+        store_path.display(),
+        last_good.display(),
+        pre_restore.display()
+    );
+    true
+}
+
 /// Decrypt store.bin in place if it's encrypted and keychain key is available.
 /// No-op if the file is already plain JSON or keychain is unavailable.
 fn decrypt_store_file(path: &Path) {
@@ -64,13 +189,21 @@ fn decrypt_store_file(path: &Path) {
             return;
         }
         secrets::KeyResult::NotFound | secrets::KeyResult::Unavailable => {
-            tracing::warn!(
-                "store.bin is encrypted but keychain key not found — \
-                 saving backup as store.bin.encrypted.bak and resetting to defaults"
-            );
+            // L4 — DO NOT wipe. Previously this branch wrote `b"{}"` over
+            // store.bin and lost the user's settings on every signed update
+            // (macOS code-signing identity changes can evict keychain keys).
+            // The encrypted file still has the user's data; leave it in
+            // place and let the load fall through to L2 auto_restore from
+            // store.bin.last-good. Manual recovery: re-grant keychain
+            // access in System Settings → Privacy & Security → Keychain.
             let backup = path.with_extension("bin.encrypted.bak");
             let _ = std::fs::copy(path, &backup);
-            let _ = std::fs::write(path, b"{}");
+            tracing::error!(
+                "store.bin is encrypted but keychain key not found — \
+                 leaving the encrypted file in place ({}). Restore from \
+                 store.bin.last-good or grant keychain access and restart.",
+                backup.display()
+            );
             return;
         }
     };
@@ -82,13 +215,18 @@ fn decrypt_store_file(path: &Path) {
             }
         }
         Err(e) => {
-            tracing::error!(
-                "failed to decrypt store.bin: {} — saving backup as store.bin.encrypted.bak",
-                e
-            );
+            // L4 — DO NOT wipe. Same rationale as the missing-key branch
+            // above: keep the encrypted file (now backed up under .encrypted.bak)
+            // so the user has a recovery path, and let the load fall
+            // through to L2 auto_restore.
             let backup = path.with_extension("bin.encrypted.bak");
             let _ = std::fs::copy(path, &backup);
-            let _ = std::fs::write(path, b"{}");
+            tracing::error!(
+                "failed to decrypt store.bin: {} — backed up as {}, leaving \
+                 in place. Restore from store.bin.last-good if available.",
+                e,
+                backup.display()
+            );
         }
     }
 }
@@ -186,6 +324,13 @@ pub fn reencrypt_store_file(app: &AppHandle) {
             let _ = std::fs::remove_file(&flag_path);
         }
 
+        // L1 — snapshot the current state to .last-good IFF it's healthy
+        // (parses + has aiPresets). Runs BEFORE encryption so the snapshot
+        // is plain JSON and recoverable even if keychain access is lost on
+        // the next update. No-op for degraded states so we never freeze
+        // bad data as the recovery source.
+        snapshot_last_good(&store_path);
+
         encrypt_store_file(&store_path);
     }
 }
@@ -212,6 +357,14 @@ fn build_store(app: &AppHandle) -> anyhow::Result<Arc<tauri_plugin_store::Store<
     // Decrypt store.bin before the plugin reads it (no-op if plain JSON or keychain unavailable)
     if store_path.exists() {
         decrypt_store_file(&store_path);
+    }
+
+    // L2 — if the file is degraded (parses but has no aiPresets), restore
+    // from .last-good before the plugin reads it. Runs after decrypt so
+    // we operate on the plain-JSON form. No-op if the current state is
+    // already healthy or no .last-good exists yet.
+    if store_path.exists() {
+        let _ = auto_restore_if_wiped(&store_path);
     }
 
     let mut last_err = None;
@@ -247,8 +400,32 @@ fn build_store(app: &AppHandle) -> anyhow::Result<Arc<tauri_plugin_store::Store<
                 // resources_table is cleared but StoreState.stores still holds the
                 // old resource ID. Force a fresh store via create_new to evict it.
                 if msg.contains("resource id") && msg.contains("invalid") {
+                    // L3 — refuse `create_new()` over a healthy on-disk
+                    // file. The fresh in-memory store would later flush
+                    // empty defaults to disk and silently overwrite the
+                    // user's settings (verified root cause for Louis's
+                    // 2026-05-09 wipe). If the file has aiPresets, surface
+                    // the error so the retry loop runs again instead.
+                    let disk_healthy = std::fs::read(&store_path)
+                        .map(|d| store_json_has_presets(&d))
+                        .unwrap_or(false);
+                    if disk_healthy {
+                        tracing::error!(
+                            "store resource stale (attempt {}): {}, but disk \
+                             has aiPresets — refusing create_new() to avoid \
+                             overwriting user data; will retry .build()",
+                            attempt + 1,
+                            msg
+                        );
+                        last_err = Some(e);
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            200 * (attempt as u64 + 1),
+                        ));
+                        continue;
+                    }
                     tracing::warn!(
-                        "store resource stale (attempt {}): {}, rebuilding fresh",
+                        "store resource stale (attempt {}): {}, rebuilding fresh \
+                         (disk file empty/missing presets, safe to create_new)",
                         attempt + 1,
                         msg
                     );
@@ -1288,6 +1465,158 @@ impl PipeSuggestionsSettingsStore {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---- Settings-loss recovery ----
+
+    fn write_store(dir: &Path, contents: &Value) -> std::path::PathBuf {
+        let p = dir.join("store.bin");
+        std::fs::write(&p, serde_json::to_vec_pretty(contents).unwrap()).unwrap();
+        p
+    }
+
+    fn write_last_good(dir: &Path, contents: &Value) -> std::path::PathBuf {
+        let p = dir.join("store.bin.last-good");
+        std::fs::write(&p, serde_json::to_vec_pretty(contents).unwrap()).unwrap();
+        p
+    }
+
+    fn presets_n(n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|i| json!({"id": format!("p{}", i), "model": "x", "provider": "screenpipe-cloud"}))
+            .collect()
+    }
+
+    #[test]
+    fn store_json_has_presets_recognises_healthy() {
+        let healthy = serde_json::to_vec(&json!({"settings": {"aiPresets": presets_n(3)}})).unwrap();
+        assert!(store_json_has_presets(&healthy));
+    }
+
+    #[test]
+    fn store_json_has_presets_rejects_empty_or_missing() {
+        let empty_arr = serde_json::to_vec(&json!({"settings": {"aiPresets": []}})).unwrap();
+        let missing = serde_json::to_vec(&json!({"settings": {}})).unwrap();
+        let no_settings = serde_json::to_vec(&json!({})).unwrap();
+        let invalid_json = b"{not json".to_vec();
+        assert!(!store_json_has_presets(&empty_arr));
+        assert!(!store_json_has_presets(&missing));
+        assert!(!store_json_has_presets(&no_settings));
+        assert!(!store_json_has_presets(&invalid_json));
+    }
+
+    #[test]
+    fn snapshot_last_good_writes_when_healthy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(
+            tmp.path(),
+            &json!({"settings": {"aiPresets": presets_n(2)}}),
+        );
+        snapshot_last_good(&store_path);
+        let lg = store_path.with_extension(LAST_GOOD_SUFFIX);
+        assert!(lg.exists(), "should have written .last-good");
+        let lg_data = std::fs::read(&lg).unwrap();
+        assert!(store_json_has_presets(&lg_data));
+    }
+
+    #[test]
+    fn snapshot_last_good_skips_degraded() {
+        // L1's contract: never freeze a wiped state as the recovery source.
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(tmp.path(), &json!({"settings": {"aiPresets": []}}));
+        snapshot_last_good(&store_path);
+        let lg = store_path.with_extension(LAST_GOOD_SUFFIX);
+        assert!(!lg.exists(), "must not snapshot a degraded store");
+    }
+
+    #[test]
+    fn auto_restore_recovers_wiped_store_from_last_good() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Simulate the wipe — current file has no presets, last-good has them
+        let store_path = write_store(tmp.path(), &json!({"settings": {"aiPresets": []}}));
+        write_last_good(
+            tmp.path(),
+            &json!({"settings": {"aiPresets": presets_n(5)}}),
+        );
+
+        let restored = auto_restore_if_wiped(&store_path);
+        assert!(restored, "should report a restore happened");
+
+        let now = std::fs::read(&store_path).unwrap();
+        assert!(store_json_has_presets(&now), "store must be healthy after restore");
+
+        // Forensic copy of the wiped file must exist
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap_or_default())
+            .filter(|n| n.contains("pre-restore-"))
+            .collect();
+        assert_eq!(entries.len(), 1, "expected 1 pre-restore backup, got {entries:?}");
+    }
+
+    #[test]
+    fn auto_restore_noop_when_current_is_healthy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(
+            tmp.path(),
+            &json!({"settings": {"aiPresets": presets_n(3)}}),
+        );
+        // Even if last-good exists, current is fine — don't touch.
+        write_last_good(
+            tmp.path(),
+            &json!({"settings": {"aiPresets": presets_n(99)}}),
+        );
+
+        let restored = auto_restore_if_wiped(&store_path);
+        assert!(!restored);
+
+        // Confirm the current file wasn't replaced by .last-good's 99 presets
+        let now: Value = serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        let n = now.pointer("/settings/aiPresets").unwrap().as_array().unwrap().len();
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn auto_restore_noop_when_last_good_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(tmp.path(), &json!({"settings": {"aiPresets": []}}));
+        let restored = auto_restore_if_wiped(&store_path);
+        assert!(!restored, "no last-good means no restore");
+    }
+
+    #[test]
+    fn auto_restore_noop_when_last_good_is_also_degraded() {
+        // Defense: even if .last-good somehow got written wiped (shouldn't
+        // happen due to L1's guard, but belt + suspenders), don't restore
+        // garbage over garbage.
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = write_store(tmp.path(), &json!({"settings": {"aiPresets": []}}));
+        write_last_good(tmp.path(), &json!({"settings": {"aiPresets": []}}));
+        let restored = auto_restore_if_wiped(&store_path);
+        assert!(!restored);
+    }
+
+    #[test]
+    fn auto_restore_skips_encrypted_files() {
+        // L2 must not try to "restore" over a still-encrypted blob — the
+        // decrypt path owns that case.
+        let tmp = tempfile::tempdir().unwrap();
+        let store_path = tmp.path().join("store.bin");
+        let mut blob = STORE_MAGIC.to_vec();
+        blob.extend_from_slice(b"<<encrypted ciphertext>>");
+        std::fs::write(&store_path, &blob).unwrap();
+        write_last_good(
+            tmp.path(),
+            &json!({"settings": {"aiPresets": presets_n(3)}}),
+        );
+
+        let restored = auto_restore_if_wiped(&store_path);
+        assert!(!restored, "encrypted file must be left for the decrypt path");
+        // And the file must be unchanged
+        assert_eq!(std::fs::read(&store_path).unwrap(), blob);
+    }
+
+    // ---- Existing tests ----
 
     #[test]
     fn test_sanitize_legacy_fields_does_not_panic() {
