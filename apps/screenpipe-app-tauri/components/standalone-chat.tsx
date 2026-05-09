@@ -1013,6 +1013,8 @@ function ToolCallGroup({ toolCalls, defaultExpanded = false }: { toolCalls: Tool
 // Renders message content with interleaved text and tool call blocks
 function MessageContent({ message, onImageClick, onRetry }: { message: Message; onImageClick?: (images: string[], index: number) => void; onRetry?: (prompt: string) => void }) {
   const isUser = message.role === "user";
+  const { settings } = useSettings();
+  const hideThinkingBlocks = settings?.hideThinkingBlocks ?? true;
 
   // Retry CTA — shown at the bottom of error messages that have a retryPrompt
   const retryCta = !isUser && message.retryPrompt ? (
@@ -1047,11 +1049,12 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
             return <MarkdownBlock key={`text-${group.key}`} text={group.text} isUser={isUser} />;
           }
           if (group.type === "thinking") {
-            // Always start collapsed. The "thought for Xs" pill is enough
-            // signal that the assistant did chain-of-thought work — auto-
-            // expanding it (the c092166e0 behavior) drew the eye to the
-            // raw reasoning text instead of the actual response and felt
-            // noisy on every message. Click to expand if you want detail.
+            // Settings → Display → Hide Thinking Blocks (default true). Even
+            // when shown the block starts collapsed: the "thought for Xs"
+            // pill is enough signal that the assistant did chain-of-thought
+            // work — auto-expanding (the c092166e0 behavior) drew the eye
+            // to raw reasoning instead of the response.
+            if (hideThinkingBlocks) return null;
             return <ThinkingBlock key={`thinking-${group.key}`} text={group.text} isThinking={group.isThinking} durationMs={group.durationMs} />;
           }
           if (group.type === "tool-group") {

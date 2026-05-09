@@ -237,6 +237,8 @@ export type Settings = SettingsStore & {
 	localRetentionMode?: "media" | "all";
 	/** Apply macOS vibrancy effect to sidebar for a translucent glass look */
 	translucentSidebar?: boolean;
+	/** Hide model "thinking" reasoning blocks in chat (default: true) */
+	hideThinkingBlocks?: boolean;
 	/** Notification preferences — which notification sources are enabled */
 	notificationPrefs?: {
 		captureStalls: boolean;

@@ -1750,7 +1750,13 @@ showRestartNotifications?: boolean;
 /**
  * When true, apply macOS vibrancy effect to the sidebar for a translucent look.
  */
-translucentSidebar?: boolean; 
+translucentSidebar?: boolean;
+/**
+ * When true (default), hide model "thinking" reasoning blocks in the chat
+ * transcript. The model still emits them server-side; we just don't
+ * render the collapsible block in the UI.
+ */
+hideThinkingBlocks?: boolean;
 /**
  * UI theme: "light", "dark", or "system".
  */
