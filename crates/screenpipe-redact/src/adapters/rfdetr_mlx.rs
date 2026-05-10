@@ -33,6 +33,48 @@ use crate::SpanLabel;
 const NAME: &str = "rfdetr-mlx";
 const VERSION: u32 = 9; // tracks rfdetr_v9 weights
 
+/// Minimum macOS major version that's safe for MLX at runtime.
+///
+/// Mirrors `screenpipe_config::PARAKEET_MIN_MACOS_MAJOR` — mlx-sys's
+/// pre-compiled `.metallib` uses Metal 3.2+ features (simdgroup_matrix
+/// kernels) that segfault during Metal init on older macOS. The
+/// build-time deployment target gate (14.0) lets the binary *launch*
+/// on macOS 14+; this runtime gate prevents us from actually invoking
+/// MLX on anything below 26.
+const MIN_MACOS_MAJOR: u32 = 26;
+
+/// Returns true iff this host can safely run MLX at runtime.
+///
+/// On macOS aarch64, shells out to `sw_vers -productVersion` and
+/// gates on [`MIN_MACOS_MAJOR`] — same shape as
+/// `screenpipe_config::macos_major_version`, inlined here so this
+/// crate doesn't pick up screenpipe-config just for one fn. On any
+/// other platform this always returns `false` — the cfg gates
+/// elsewhere keep the rest of the module from compiling, but having
+/// this fn always callable simplifies the public API.
+fn is_runtime_supported() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        macos_major_version()
+            .map(|v| v >= MIN_MACOS_MAJOR)
+            .unwrap_or(false)
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn macos_major_version() -> Option<u32> {
+    let output = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&output.stdout);
+    s.trim().split('.').next()?.parse().ok()
+}
+
 /// Configuration for [`RfdetrMlxRedactor`].
 #[derive(Debug, Clone)]
 pub struct RfdetrMlxConfig {
@@ -86,7 +128,19 @@ impl RfdetrMlxConfig {
     /// `<model_path>.partial`, gets verified, then renames over
     /// `<model_path>`. A killed process leaves at most a `.partial`
     /// that the next call cleans up.
+    ///
+    /// Returns [`RedactError::Unavailable`] without touching the disk
+    /// if the host macOS is too old for MLX at runtime (see
+    /// [`is_runtime_supported`]) — the engine falls through to the
+    /// ONNX adapter cleanly, and we don't waste a 108 MB download on
+    /// a machine that can't use it.
     pub async fn ensure_model_present(&self) -> Result<(), RedactError> {
+        if !is_runtime_supported() {
+            return Err(RedactError::Unavailable(format!(
+                "rfdetr-mlx requires macOS {MIN_MACOS_MAJOR}+ at runtime; \
+                 fall through to the ONNX adapter"
+            )));
+        }
         if self.model_path.exists() && Self::sha256_matches(&self.model_path)? {
             return Ok(());
         }
@@ -199,13 +253,18 @@ mod imp {
 
     impl RfdetrMlxRedactor {
         /// Sync constructor. Returns [`RedactError::Unavailable`] if
-        /// the safetensors file is missing — caller can fall back to
-        /// the ONNX adapter.
+        /// the safetensors file is missing or the host macOS is too
+        /// old for MLX — caller can fall back to the ONNX adapter.
         pub fn load(cfg: RfdetrMlxConfig) -> Result<Self, RedactError> {
+            if !is_runtime_supported() {
+                return Err(RedactError::Unavailable(format!(
+                    "rfdetr-mlx requires macOS {MIN_MACOS_MAJOR}+ at runtime"
+                )));
+            }
             if !cfg.model_path.exists() {
                 return Err(RedactError::Unavailable(format!(
                     "rfdetr-mlx safetensors not found at {} \
-                     (convert from rfdetr_v9.onnx via convert/onnx_to_mlx.py)",
+                     (download via RfdetrMlxConfig::ensure_model_present)",
                     cfg.model_path.display()
                 )));
             }

@@ -1,6 +1,6 @@
 [package]
 name = "screenpipe-app"
-version = "2.4.187"
+version = "2.4.188"
 description = "24/7 memory for your desktop. 100% local."
 authors = ["you"]
 license = ""
@@ -251,6 +251,10 @@ qwen3-asr = ["screenpipe-engine/qwen3-asr"]
 parakeet = ["screenpipe-engine/parakeet"]
 # macOS only — requires Apple MLX (Metal)
 parakeet-mlx = ["screenpipe-engine/parakeet-mlx"]
+# Apple Silicon only — image-PII detector via mlx-rs (~6× faster than
+# ONNX CoreML EP). Forwards to screenpipe-engine which forwards to
+# screenpipe-redact/mlx-mac.
+rfdetr-mlx = ["screenpipe-engine/rfdetr-mlx"]
 jemalloc = ["tikv-jemallocator"]
 
 

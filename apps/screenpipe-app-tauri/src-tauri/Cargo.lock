@@ -7064,6 +7064,7 @@ version = "0.25.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3a0f592c5839b0237b3072530b1d3c503923579a2009ee0761df3edd1b1f27b"
 dependencies = [
+ "bytemuck",
  "dyn-clone",
  "half",
  "itertools 0.14.0",
@@ -7077,6 +7078,7 @@ dependencies = [
  "num_enum",
  "parking_lot",
  "paste",
+ "safetensors 0.6.2",
  "smallvec 1.15.1",
  "strum",
  "thiserror 2.0.18",
@@ -10408,6 +10410,16 @@ dependencies = [
 
 [[package]]
 name = "safetensors"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "172dd94c5a87b5c79f945c863da53b2ebc7ccef4eca24ac63cca66a41aab2178"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "safetensors"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "675656c1eabb620b921efea4f9199f97fc86e36dd6ffd1fbbe48d0f59a4987f5"
@@ -10557,7 +10569,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.186"
+version = "2.4.188"
 dependencies = [
  "aes",
  "anyhow",
@@ -10949,6 +10961,7 @@ dependencies = [
  "ort",
  "regex",
  "reqwest 0.13.3",
+ "screenpipe-rfdetr-mlx",
  "serde",
  "sha2 0.10.9",
  "sqlx",
@@ -10956,6 +10969,17 @@ dependencies = [
  "tinfoil",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "screenpipe-rfdetr-mlx"
+version = "0.3.327"
+dependencies = [
+ "image 0.25.10",
+ "mlx-rs",
+ "mlx-sys",
+ "safetensors 0.6.2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
