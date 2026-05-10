@@ -106,6 +106,15 @@ pub struct RecordingState {
     pub capture: Arc<Mutex<Option<CaptureSession>>>,
     /// True while a server start is in progress (prevents race between main.rs boot and frontend)
     pub is_starting: Arc<AtomicBool>,
+    /// True while a `start_capture` invocation is in flight. The frontend
+    /// mounts `<DeeplinkHandler />` in every webview window, and the tray
+    /// emits `shortcut-start-recording` app-wide — every listening window
+    /// fires `commands.startCapture()` simultaneously. Without this guard,
+    /// concurrent calls both pass the is_some() check, both build a
+    /// CaptureSession, and the second clobbers the first — dropping the
+    /// first runs its shutdown handlers and tears down workers shared with
+    /// the second, surfacing as a PoolClosed cascade and lost audio chunks.
+    pub is_starting_capture: Arc<AtomicBool>,
     /// Epoch seconds of last successful spawn — enforces cooldown between restarts
     pub last_spawn_epoch: Arc<AtomicU64>,
 }
@@ -244,25 +253,77 @@ pub async fn start_capture(
 ) -> Result<(), String> {
     info!("Starting capture session");
 
-    // Check if already capturing
-    {
-        let capture_guard = state.capture.lock().await;
-        if capture_guard.is_some() {
-            info!("Capture session already running");
-            return Ok(());
+    // Race guard: short-circuit duplicate invocations.
+    //
+    // `<DeeplinkHandler />` is mounted in every non-overlay webview, and the
+    // tray emits `shortcut-start-recording` app-wide — every listening window
+    // fires `commands.startCapture()` simultaneously. Without this guard, two
+    // concurrent calls both pass the `is_some()` check, both build a
+    // CaptureSession (~290ms), and the second clobbers the first. Dropping
+    // the first runs its shutdown handlers, which tear down workers shared
+    // with the second — surfacing as a PoolClosed cascade and silently lost
+    // audio chunks.
+    if state.is_starting_capture.swap(true, Ordering::SeqCst) {
+        info!("Capture start already in progress, skipping duplicate");
+        return Ok(());
+    }
+    struct ResetGuard<'a>(&'a AtomicBool);
+    impl Drop for ResetGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
         }
+    }
+    let _reset = ResetGuard(&state.is_starting_capture);
+
+    // Hold the capture lock from the is_some check through the assign so a
+    // concurrent `start_capture_internal` (called from spawn_screenpipe's
+    // existing-server path, not gated by is_starting_capture) can't race us.
+    let mut capture_guard = state.capture.lock().await;
+    if capture_guard.is_some() {
+        info!("Capture session already running");
+        return Ok(());
+    }
+
+    // `state.server.is_some()` only means ServerCore was constructed once; it
+    // does NOT mean the HTTP serve task is still alive. Long-running sessions
+    // can lose the HTTP server across sleep/wake while ServerCore stays in
+    // state. Starting capture on a corpse leaves the timeline UI showing
+    // "connection error" forever — escalate to a full restart instead.
+    let (port, api_key) = {
+        let server_guard = state.server.lock().await;
+        let Some(ref core) = *server_guard else {
+            return Err("Server not running — cannot start capture".to_string());
+        };
+        (core.port, core.local_api_key.clone())
+    };
+
+    let mut req = reqwest::Client::new()
+        .get(format!("http://localhost:{}/health", port))
+        .timeout(std::time::Duration::from_secs(2));
+    if let Some(ref key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+    let healthy = matches!(req.send().await, Ok(r) if r.status().is_success());
+    if !healthy {
+        warn!(
+            "Server unresponsive on port {} — requesting full restart",
+            port
+        );
+        let _ = app.emit("request-server-restart", ());
+        return Err(format!(
+            "Server not responding on port {} — full restart requested",
+            port
+        ));
     }
 
     let server_guard = state.server.lock().await;
     let server = server_guard
         .as_ref()
         .ok_or_else(|| "Server not running — cannot start capture".to_string())?;
-
     let config = build_config(&app)?;
     let session = CaptureSession::start(server, &config).await?;
     drop(server_guard);
 
-    let mut capture_guard = state.capture.lock().await;
     *capture_guard = Some(session);
 
     info!("Capture session started");
@@ -734,10 +795,21 @@ pub async fn spawn_screenpipe(
 }
 
 /// Internal helper: start capture on an already-running server.
+///
+/// Lock-first pattern matches `start_capture` so a concurrent `start_capture`
+/// can't build a parallel session and clobber ours.
 async fn start_capture_internal(
     state: &RecordingState,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
+    let mut capture_guard = state.capture.lock().await;
+    if capture_guard.is_some() {
+        // A concurrent start_capture beat us to it.
+        state.is_starting.store(false, Ordering::SeqCst);
+        info!("Capture already started by concurrent caller");
+        return Ok(());
+    }
+
     let server_guard = state.server.lock().await;
     let server = server_guard
         .as_ref()
@@ -747,7 +819,6 @@ async fn start_capture_internal(
     let session = CaptureSession::start(server, &config).await?;
     drop(server_guard);
 
-    let mut capture_guard = state.capture.lock().await;
     *capture_guard = Some(session);
     state.is_starting.store(false, Ordering::SeqCst);
 
