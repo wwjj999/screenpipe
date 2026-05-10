@@ -4521,25 +4521,34 @@ export function StandaloneChat({
           startNewConversation={startNewConversation}
         />
         <div className="flex-1" />
-        <Button
-          variant="default"
-          size="sm"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={async (e) => {
-            e.stopPropagation();
-            piStoppedIntentionallyRef.current = true;
-            await startNewConversation();
-            // Pi will auto-restart on the next message via the sendPiMessage flow
-          }}
-          className="relative z-10 h-7 px-3 gap-1.5 text-xs bg-foreground text-background hover:bg-background hover:text-foreground transition-colors duration-150"
-          title="New chat"
-        >
-          <Plus size={14} />
-          <span>New</span>
-        </Button>
-        <kbd suppressHydrationWarning className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-muted-foreground bg-muted/50 border border-border/50 rounded">
-          {formatShortcutDisplay(settings.showChatShortcut || (isMac ? "Control+Super+L" : "Alt+L"), isMac)}
-        </kbd>
+        {/* New-chat affordance + shortcut chip. Shown in the floating
+            overlay chat (`/chat`) where there's no AppSidebar. Hidden
+            on the home page — the AppSidebar's first nav row already
+            spawns a fresh session, so a duplicate top-right button
+            just crowds the BrowserSidebar's column. */}
+        {!hideInlineHistory && (
+          <>
+            <Button
+              variant="default"
+              size="sm"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={async (e) => {
+                e.stopPropagation();
+                piStoppedIntentionallyRef.current = true;
+                await startNewConversation();
+                // Pi will auto-restart on the next message via the sendPiMessage flow
+              }}
+              className="relative z-10 h-7 px-3 gap-1.5 text-xs bg-foreground text-background hover:bg-background hover:text-foreground transition-colors duration-150"
+              title="New chat"
+            >
+              <Plus size={14} />
+              <span>New</span>
+            </Button>
+            <kbd suppressHydrationWarning className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-muted-foreground bg-muted/50 border border-border/50 rounded">
+              {formatShortcutDisplay(settings.showChatShortcut || (isMac ? "Control+Super+L" : "Alt+L"), isMac)}
+            </kbd>
+          </>
+        )}
       </div>
 
       {/* Main content area with optional history sidebar — only used in
