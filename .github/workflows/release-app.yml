@@ -166,9 +166,9 @@ jobs:
         include:
           # GitHub-hosted macOS 26 runner for Apple Silicon + Apple Intelligence
           - platform: ${{ needs.check_commit.outputs.macos_arm_runner || 'macos-latest' }}
-            args: "--target aarch64-apple-darwin --features metal,parakeet-mlx"
+            args: "--target aarch64-apple-darwin --features metal,parakeet-mlx,rfdetr-mlx"
             target: aarch64-apple-darwin
-            tauri-args: "--target aarch64-apple-darwin --features metal,parakeet-mlx,official-build"
+            tauri-args: "--target aarch64-apple-darwin --features metal,parakeet-mlx,rfdetr-mlx,official-build"
             os_type: "macos"
           - platform: "macos-26"
             args: "--target x86_64-apple-darwin --features metal"

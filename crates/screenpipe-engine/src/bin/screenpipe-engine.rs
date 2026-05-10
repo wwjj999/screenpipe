@@ -1582,18 +1582,27 @@ async fn main() -> anyhow::Result<()> {
         // ~/.screenpipe/models/. Subsequent starts are instant.
         #[allow(unused_mut)]
         let mut detector_arc: Option<Arc<dyn ImageRedactor>> = None;
-        #[cfg(all(feature = "rfdetr-mlx", target_os = "macos"))]
+        #[cfg(all(feature = "rfdetr-mlx", target_os = "macos", target_arch = "aarch64"))]
         {
             use screenpipe_redact::adapters::rfdetr_mlx::{RfdetrMlxConfig, RfdetrMlxRedactor};
-            match RfdetrMlxRedactor::load(RfdetrMlxConfig::default()) {
-                Ok(d) => {
-                    info!("image-PII detector: rfdetr-mlx (Apple Silicon GPU)");
-                    detector_arc = Some(Arc::new(d) as Arc<dyn ImageRedactor>);
-                }
-                Err(e) => {
-                    tracing::info!(
-                        "rfdetr-mlx unavailable ({e}); falling back to ONNX adapter"
-                    );
+            let mlx_cfg = RfdetrMlxConfig::default();
+            // Mirrors the ONNX adapter: download once, verify SHA-256,
+            // cache at ~/.screenpipe/models/rfdetr_v9.safetensors.
+            if let Err(e) = mlx_cfg.ensure_model_present().await {
+                tracing::info!(
+                    "rfdetr-mlx safetensors download failed ({e}); falling back to ONNX adapter"
+                );
+            } else {
+                match RfdetrMlxRedactor::load(mlx_cfg) {
+                    Ok(d) => {
+                        info!("image-PII detector: rfdetr-mlx (Apple Silicon GPU)");
+                        detector_arc = Some(Arc::new(d) as Arc<dyn ImageRedactor>);
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            "rfdetr-mlx load failed ({e}); falling back to ONNX adapter"
+                        );
+                    }
                 }
             }
         }

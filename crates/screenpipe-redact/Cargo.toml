@@ -106,9 +106,10 @@ rev = "e725ad5e8a89ae46e4cb38022a26e746c37329b6"
 optional = true
 features = ["metal"]
 
-# MLX-based rfdetr runtime — only meaningful on Apple Silicon. On
-# Linux/Windows the dep is an empty optional, the `mlx-mac` feature is
-# never enabled, and nothing pulls mlx-rs.
-[target.'cfg(target_os = "macos")'.dependencies.screenpipe-rfdetr-mlx]
+# MLX-based rfdetr runtime — Apple-Silicon-only (mlx-rs links against
+# Metal Performance Shaders Graph, which is unavailable on Intel
+# macOS). Cargo target_arch gate keeps the dep out of x86_64 macOS,
+# Linux, and Windows builds entirely.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies.screenpipe-rfdetr-mlx]
 path = "../screenpipe-rfdetr-mlx"
 optional = true
