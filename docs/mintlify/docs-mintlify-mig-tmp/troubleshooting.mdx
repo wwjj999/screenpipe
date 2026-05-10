@@ -89,6 +89,18 @@ note: AirPods don't have this issue — Apple uses a proprietary codec.
 - use a better microphone
 - try `deepgram` or `screenpipe-cloud` for cloud-based transcription (highest accuracy)
 
+### record only specific apps (e.g. Teams, Zoom)
+
+if you want to record only certain applications (like Teams meetings) and exclude everything else:
+
+1. **screen capture**: go to **settings → recording → included windows** and add the app name (e.g., `Teams`, `Zoom`). screenpipe will only capture these windows, even if you switch away briefly
+2. **audio devices**: go to **settings → recording** and select only the devices you need — for example, just your microphone and system audio, deselecting other inputs
+3. **test it**: open Teams and verify the timeline shows only Teams content. try opening other apps — they shouldn't appear in the recording
+
+this is useful for compliance, privacy (avoid recording unrelated work), or reducing storage usage. your recorded meetings and transcriptions are searchable via the API as normal.
+
+note: with included windows, screenpipe pauses capture when the app loses focus. this is intentional — if you want to capture even when focused on another window, use the broader "all windows" setting instead.
+
 ---
 
 ## chat & AI interactions
