@@ -329,7 +329,9 @@ export function useTeam() {
           throw new Error("incorrect passphrase — could not decrypt team key");
         }
       } else {
-        throw new Error("invite link is missing key information");
+        throw new Error(
+          "this looks like a notification-only invite link (no encryption key). ask your admin to open their desktop app → settings → team → copy invite link, and share that link directly with you (slack/imessage as plain text)."
+        );
       }
 
       await saveTeamKeyToStore(teamId, key);
