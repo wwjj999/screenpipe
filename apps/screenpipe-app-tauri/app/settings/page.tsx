@@ -14,7 +14,6 @@ import {
   Shield,
   Layout,
   Users,
-  Phone,
   Mic,
   Bell,
   BarChart3,
@@ -34,7 +33,6 @@ import { TeamSection } from "@/components/settings/team-section";
 import { DisplaySection } from "@/components/settings/display-section";
 import { PrivacySection } from "@/components/settings/privacy-section";
 import { StorageSection } from "@/components/settings/storage-section";
-import { MeetingsSection } from "@/components/settings/meetings-section";
 import { NotificationsSettings } from "@/components/settings/notifications-settings";
 import { UsageSection } from "@/components/settings/usage-section";
 import { SpeakersSection } from "@/components/settings/speakers-section";
@@ -52,7 +50,6 @@ type SettingsSection =
   | "shortcuts"
   | "privacy"
   | "storage"
-  | "meetings"
   | "team"
   | "notifications"
   | "referral"
@@ -61,7 +58,7 @@ type SettingsSection =
 
 const ALL_SETTINGS_SECTIONS: SettingsSection[] = [
   "display", "general", "ai", "recording", "shortcuts", "notifications",
-  "usage", "privacy", "storage", "meetings", "speakers",
+  "usage", "privacy", "storage", "speakers",
   "team", "account", "referral",
 ];
 
@@ -210,7 +207,6 @@ function SettingsContent() {
         { id: "usage" as const, label: "Usage", icon: <BarChart3 className="h-4 w-4" /> },
         { id: "privacy" as const, label: "Privacy", icon: <Shield className="h-4 w-4" /> },
         { id: "storage" as const, label: "Storage", icon: <HardDrive className="h-4 w-4" /> },
-        { id: "meetings" as const, label: "Meetings", icon: <Phone className="h-4 w-4" /> },
         { id: "speakers" as const, label: "Speakers", icon: <Mic className="h-4 w-4" /> },
       ].filter((s) => !isSectionHidden(s.id)),
     },
@@ -238,7 +234,6 @@ function SettingsContent() {
       case "shortcuts":     return <ShortcutSection />;
       case "privacy":       return <PrivacySection />;
       case "storage":       return <StorageSection />;
-      case "meetings":      return <MeetingsSection />;
       case "team":          return <TeamSection />;
       case "notifications": return <NotificationsSettings />;
       case "referral":      return <ReferralSection />;
