@@ -7900,7 +7900,11 @@ LIMIT ? OFFSET ?
             .to_string();
         let merged_end: Option<String> = rows
             .iter()
-            .map(|r| r.meeting_end.clone().unwrap_or_else(|| r.meeting_start.clone()))
+            .map(|r| {
+                r.meeting_end
+                    .clone()
+                    .unwrap_or_else(|| r.meeting_start.clone())
+            })
             .max();
 
         // Title: survivor wins if non-empty, otherwise first non-empty chronologically.
@@ -7967,7 +7971,11 @@ LIMIT ? OFFSET ?
         .await?;
 
         // Delete the non-survivor rows.
-        let losers: Vec<i64> = ids.iter().copied().filter(|&id| id != survivor_id).collect();
+        let losers: Vec<i64> = ids
+            .iter()
+            .copied()
+            .filter(|&id| id != survivor_id)
+            .collect();
         if !losers.is_empty() {
             let loser_placeholders: Vec<String> =
                 (0..losers.len()).map(|i| format!("?{}", i + 1)).collect();
@@ -8019,10 +8027,7 @@ LIMIT ? OFFSET ?
         .fetch_one(&mut **tx.conn())
         .await?;
 
-        let original_end = original
-            .meeting_end
-            .clone()
-            .ok_or(SqlxError::RowNotFound)?;
+        let original_end = original.meeting_end.clone().ok_or(SqlxError::RowNotFound)?;
         if at <= original.meeting_start.as_str() || at >= original_end.as_str() {
             return Err(SqlxError::Protocol(format!(
                 "split point {} must be strictly between meeting_start {} and meeting_end {}",

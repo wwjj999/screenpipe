@@ -341,9 +341,7 @@ pub(crate) async fn split_meeting_handler(
     if DateTime::parse_from_rfc3339(&body.at).is_err() {
         return Err((
             StatusCode::BAD_REQUEST,
-            JsonResponse(
-                json!({"error": format!("'at' must be RFC3339, got: {}", body.at)}),
-            ),
+            JsonResponse(json!({"error": format!("'at' must be RFC3339, got: {}", body.at)})),
         ));
     }
 
