@@ -8038,6 +8038,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "screenpipe-meeting-eval"
+version = "0.3.327"
+dependencies = [
+ "anyhow",
+ "clap",
+ "screenpipe-engine",
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "screenpipe-redact"
 version = "0.3.327"
 dependencies = [
