@@ -35,6 +35,19 @@ pub struct MergeMeetingsRequest {
 }
 
 #[derive(OaSchema, Deserialize, Debug)]
+pub struct SplitMeetingRequest {
+    /// RFC3339 timestamp strictly between the meeting's start and end.
+    /// The original row keeps `[start, at]`; a new row is created for `[at, end]`.
+    pub at: String,
+}
+
+#[derive(OaSchema, Serialize, Debug)]
+pub struct SplitMeetingResponse {
+    pub before: MeetingRecord,
+    pub after: MeetingRecord,
+}
+
+#[derive(OaSchema, Deserialize, Debug)]
 pub struct BulkDeleteMeetingsRequest {
     pub ids: Vec<i64>,
 }
@@ -315,6 +328,41 @@ pub(crate) async fn merge_meetings_handler(
     })?;
 
     Ok(JsonResponse(meeting))
+}
+
+#[oasgen]
+pub(crate) async fn split_meeting_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    axum::Json(body): axum::Json<SplitMeetingRequest>,
+) -> Result<JsonResponse<SplitMeetingResponse>, (StatusCode, JsonResponse<Value>)> {
+    // Validate the timestamp at the edge so callers get a clean 400, not the
+    // generic 500 we'd return on a Protocol error from the DB layer.
+    if DateTime::parse_from_rfc3339(&body.at).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(
+                json!({"error": format!("'at' must be RFC3339, got: {}", body.at)}),
+            ),
+        ));
+    }
+
+    let (before, after) = state.db.split_meeting(id, &body.at).await.map_err(|e| {
+        // Distinguish "bad split point" (400) and "no such meeting" (404) from
+        // genuine 500s. RowNotFound is what split_meeting returns when the id
+        // doesn't exist or the meeting hasn't ended yet.
+        let msg = e.to_string();
+        let status = if msg.contains("must be strictly between") {
+            StatusCode::BAD_REQUEST
+        } else if msg.contains("no rows returned") || msg.contains("RowNotFound") {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        (status, JsonResponse(json!({"error": msg})))
+    })?;
+
+    Ok(JsonResponse(SplitMeetingResponse { before, after }))
 }
 
 #[oasgen]

@@ -7852,62 +7852,137 @@ LIMIT ? OFFSET ?
         Ok(())
     }
 
+    /// Merge `ids` into the lowest-id survivor.
+    ///
+    /// Preserves user-entered metadata across the merge:
+    /// - `meeting_start` = MIN across all rows
+    /// - `meeting_end`   = MAX across all rows (NULLs treated as `meeting_start`)
+    /// - `title`         = first non-empty, preferring the survivor
+    /// - `attendees`     = comma-separated union with dedup (first occurrence wins)
+    /// - `note`          = non-empty notes joined by a blank line, in `meeting_start` order
+    ///
+    /// Non-survivor rows are deleted at the end. Without this, merging silently
+    /// dropped any title/notes/attendees the user wrote on the rows that
+    /// happened to be losers.
     pub async fn merge_meetings(&self, ids: &[i64]) -> Result<MeetingRecord, SqlxError> {
         if ids.is_empty() {
             return Err(SqlxError::RowNotFound);
         }
         let mut tx = self.begin_immediate_with_retry().await?;
-        // Determine surviving id (lowest)
         let survivor_id = *ids.iter().min().unwrap();
-        // Build placeholder list for IN clause
-        let placeholders: Vec<String> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
+
+        // Fetch every row being merged so we can combine fields, not just
+        // span endpoints. Ordered by meeting_start so concatenated notes
+        // read chronologically.
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let in_clause = placeholders.join(", ");
-        // Compute merged start/end across all ids
-        let agg_sql = format!(
-            "SELECT MIN(meeting_start) AS ms, MAX(COALESCE(meeting_end, meeting_start)) AS me \
-             FROM meetings WHERE id IN ({})",
+        let fetch_sql = format!(
+            "SELECT id, meeting_start, meeting_end, meeting_app, title, attendees, note, \
+             detection_source, created_at FROM meetings WHERE id IN ({}) \
+             ORDER BY meeting_start ASC",
             in_clause
         );
-        let mut agg_query = sqlx::query(&agg_sql);
+        let mut fetch_query = sqlx::query_as::<_, MeetingRecord>(&fetch_sql);
         for id in ids.iter() {
-            agg_query = agg_query.bind(*id);
+            fetch_query = fetch_query.bind(*id);
         }
-        let row = agg_query.fetch_one(&mut **tx.conn()).await?;
-        let merged_start: Option<String> = row.try_get("ms")?;
-        let merged_end: Option<String> = row.try_get("me")?;
-        // Update the survivor row
-        let update_sql = "UPDATE meetings SET meeting_start = ?1, meeting_end = ?2 WHERE id = ?3";
-        sqlx::query(update_sql)
-            .bind(&merged_start)
-            .bind(&merged_end)
-            .bind(survivor_id)
-            .execute(&mut **tx.conn())
-            .await?;
-        // Delete the non-survivor rows
-        let delete_placeholders: Vec<String> = ids
+        let rows: Vec<MeetingRecord> = fetch_query.fetch_all(&mut **tx.conn()).await?;
+        if rows.is_empty() {
+            return Err(SqlxError::RowNotFound);
+        }
+
+        // Span: min/max across all rows. Missing ends collapse to their start.
+        let merged_start: String = rows
             .iter()
-            .enumerate()
-            .filter(|(_, &id)| id != survivor_id)
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
+            .map(|r| r.meeting_start.as_str())
+            .min()
+            .unwrap_or("")
+            .to_string();
+        let merged_end: Option<String> = rows
+            .iter()
+            .map(|r| r.meeting_end.clone().unwrap_or_else(|| r.meeting_start.clone()))
+            .max();
+
+        // Title: survivor wins if non-empty, otherwise first non-empty chronologically.
+        let survivor_title = rows
+            .iter()
+            .find(|r| r.id == survivor_id)
+            .and_then(|r| r.title.clone())
+            .filter(|t| !t.trim().is_empty());
+        let merged_title: Option<String> = survivor_title.or_else(|| {
+            rows.iter()
+                .filter_map(|r| r.title.clone())
+                .find(|t| !t.trim().is_empty())
+        });
+
+        // Attendees: comma-separated union, dedup case-insensitively, preserve
+        // original casing of the first occurrence.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut union: Vec<String> = Vec::new();
+        for r in &rows {
+            if let Some(a) = &r.attendees {
+                for part in a.split(',') {
+                    let trimmed = part.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let key = trimmed.to_lowercase();
+                    if seen.insert(key) {
+                        union.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        let merged_attendees: Option<String> = if union.is_empty() {
+            None
+        } else {
+            Some(union.join(", "))
+        };
+
+        // Notes: non-empty notes concatenated with a blank line between them,
+        // chronological order. Single non-empty note passes through unchanged.
+        let parts: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.note.clone())
+            .filter(|n| !n.trim().is_empty())
             .collect();
-        if !delete_placeholders.is_empty() {
+        let merged_note: Option<String> = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        };
+
+        // Update the survivor with every merged field in one statement.
+        sqlx::query(
+            "UPDATE meetings SET meeting_start = ?1, meeting_end = ?2, \
+             title = ?3, attendees = ?4, note = ?5 WHERE id = ?6",
+        )
+        .bind(&merged_start)
+        .bind(&merged_end)
+        .bind(&merged_title)
+        .bind(&merged_attendees)
+        .bind(&merged_note)
+        .bind(survivor_id)
+        .execute(&mut **tx.conn())
+        .await?;
+
+        // Delete the non-survivor rows.
+        let losers: Vec<i64> = ids.iter().copied().filter(|&id| id != survivor_id).collect();
+        if !losers.is_empty() {
+            let loser_placeholders: Vec<String> =
+                (0..losers.len()).map(|i| format!("?{}", i + 1)).collect();
             let delete_sql = format!(
                 "DELETE FROM meetings WHERE id IN ({})",
-                delete_placeholders.join(", ")
+                loser_placeholders.join(", ")
             );
             let mut del_query = sqlx::query(&delete_sql);
-            for &id in ids.iter().filter(|&&id| id != survivor_id) {
+            for &id in &losers {
                 del_query = del_query.bind(id);
             }
             del_query.execute(&mut **tx.conn()).await?;
         }
         tx.commit().await?;
-        // Fetch and return the surviving record
+
         let meeting = sqlx::query_as::<_, MeetingRecord>(
             "SELECT id, meeting_start, meeting_end, meeting_app, title, attendees, note, \
              detection_source, created_at FROM meetings WHERE id = ?1",
@@ -7916,6 +7991,75 @@ LIMIT ? OFFSET ?
         .fetch_one(&self.pool)
         .await?;
         Ok(meeting)
+    }
+
+    /// Split a meeting in two at `at` (RFC3339 timestamp).
+    ///
+    /// The original row keeps its id and metadata (title, attendees, note),
+    /// with `meeting_end` shortened to `at`. A new row is inserted covering
+    /// `[at, original_end]` with the same `meeting_app` but a `"split"`
+    /// `detection_source` so the audit trail is preserved; the new row starts
+    /// with no title/attendees/note (the user is expected to label it).
+    ///
+    /// `at` must lie strictly between the original start and end (inclusive
+    /// of neither). The original meeting must already be closed
+    /// (`meeting_end IS NOT NULL`).
+    pub async fn split_meeting(
+        &self,
+        id: i64,
+        at: &str,
+    ) -> Result<(MeetingRecord, MeetingRecord), SqlxError> {
+        let mut tx = self.begin_immediate_with_retry().await?;
+
+        let original: MeetingRecord = sqlx::query_as::<_, MeetingRecord>(
+            "SELECT id, meeting_start, meeting_end, meeting_app, title, attendees, note, \
+             detection_source, created_at FROM meetings WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_one(&mut **tx.conn())
+        .await?;
+
+        let original_end = original
+            .meeting_end
+            .clone()
+            .ok_or(SqlxError::RowNotFound)?;
+        if at <= original.meeting_start.as_str() || at >= original_end.as_str() {
+            return Err(SqlxError::Protocol(format!(
+                "split point {} must be strictly between meeting_start {} and meeting_end {}",
+                at, original.meeting_start, original_end
+            )));
+        }
+
+        // Shorten the original to end at the split point.
+        sqlx::query("UPDATE meetings SET meeting_end = ?1 WHERE id = ?2")
+            .bind(at)
+            .bind(id)
+            .execute(&mut **tx.conn())
+            .await?;
+
+        // Insert the second half. detection_source = "split" tags it so users
+        // (and the agent) can see this row is the result of a split, not a
+        // detector hit.
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let new_id = sqlx::query(
+            "INSERT INTO meetings (meeting_start, meeting_end, meeting_app, detection_source, created_at) \
+             VALUES (?1, ?2, ?3, 'split', ?4)",
+        )
+        .bind(at)
+        .bind(&original_end)
+        .bind(&original.meeting_app)
+        .bind(&now)
+        .execute(&mut **tx.conn())
+        .await?
+        .last_insert_rowid();
+
+        tx.commit().await?;
+
+        let before = self.get_meeting_by_id(id).await?;
+        let after = self.get_meeting_by_id(new_id).await?;
+        Ok((before, after))
     }
 
     pub async fn find_recent_meeting_for_app(
