@@ -51,8 +51,7 @@ export function TeamSection() {
   const [joining, setJoining] = useState(false);
   const [showJoinInput, setShowJoinInput] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [sendingInvite, setSendingInvite] = useState(false);
+  const [refreshingInvite, setRefreshingInvite] = useState(false);
   const [togglingAutoJoin, setTogglingAutoJoin] = useState(false);
   const [passphraseInput, setPassphraseInput] = useState("");
   const [pendingJoin, setPendingJoin] = useState<{
@@ -190,8 +189,10 @@ export function TeamSection() {
       const webMatch = input.match(/screenpi\.pe\/join\/([^#?]+)/);
       if (webMatch) {
         inviteToken = webMatch[1];
-        const hashMatch = input.match(/#key=(.+)/);
-        if (hashMatch) base64Key = hashMatch[1];
+        const hash = input.split("#")[1] || "";
+        const hashParams = new URLSearchParams(hash);
+        base64Key = hashParams.get("key");
+        claimToken = hashParams.get("claim");
 
         // Fetch team_id from server
         const infoRes = await fetch(`https://screenpi.pe/api/team/join/info?token=${encodeURIComponent(inviteToken)}`);
@@ -232,7 +233,7 @@ export function TeamSection() {
         setInviteInput("");
         setShowJoinInput(false);
       } else {
-        throw new Error("invalid invite link — missing key or claim parameter");
+        throw new Error("this invite link is missing the encryption key. ask your admin to copy the secure invite link from screenpipe desktop settings and send it directly.");
       }
     } catch (err: any) {
       toast({
@@ -307,25 +308,20 @@ export function TeamSection() {
     }
   };
 
-  const handleSendInvite = async () => {
-    if (!inviteEmail.trim()) return;
-    setSendingInvite(true);
+  const handleRefreshInvite = async () => {
+    setRefreshingInvite(true);
     try {
-      await team.sendInviteEmail(inviteEmail.trim());
-      posthog.capture("team_invite_email_sent");
-      setInviteEmail("");
-      toast({
-        title: "invite sent",
-        description: `email sent to ${inviteEmail.trim()} — share the invite link (with key) via a secure channel`,
-      });
+      await team.refreshInviteLink();
+      posthog.capture("team_invite_regenerated");
+      toast({ title: "new invite link generated" });
     } catch (err: any) {
       toast({
-        title: "failed to send invite",
+        title: "failed to generate invite link",
         description: err.message,
         variant: "destructive",
       });
     } finally {
-      setSendingInvite(false);
+      setRefreshingInvite(false);
     }
   };
 
@@ -591,11 +587,23 @@ export function TeamSection() {
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-medium flex items-center gap-1.5">
               <UserPlus className="h-4 w-4" />
-              invite link
+              secure invite link
             </h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={handleRefreshInvite}
+              disabled={refreshingInvite}
+            >
+              {refreshingInvite ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+              ) : null}
+              new link
+            </Button>
           </div>
           <p className="text-xs text-muted-foreground mb-2">
-            share this link with your teammate — the encryption key is embedded in the URL fragment and never reaches the server
+            share this one-use link directly with a teammate. it includes the encrypted team key in the URL fragment, which never reaches the server.
           </p>
           <div className="flex gap-2 items-stretch">
             <Input
@@ -614,37 +622,19 @@ export function TeamSection() {
         </Card>
       )}
 
-      {/* Email invite (admin only) */}
+      {/* Email invite note (admin only) */}
       {isAdmin && team.inviteLink && (
-        <Card className="p-4">
-          <h3 className="text-sm font-medium mb-2 flex items-center gap-1.5">
-            <UserPlus className="h-4 w-4" />
-            invite by email
-          </h3>
-          <div className="flex gap-2 items-stretch">
-            <Input
-              type="email"
-              placeholder="colleague@company.com"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendInvite()}
-              className="text-xs"
-            />
-            <Button
-              variant="outline"
-              className="h-auto px-4 whitespace-nowrap"
-              onClick={handleSendInvite}
-              disabled={sendingInvite || !inviteEmail.trim()}
-            >
-              {sendingInvite ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
-                  sending...
-                </>
-              ) : (
-                "send invite"
-              )}
-            </Button>
+        <Card className="p-4 border-amber-500/40 bg-amber-500/5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
+            <div>
+              <h3 className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                email invites are disabled for encrypted teams
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                a server-sent email cannot include the encryption key because that key only exists in your desktop app. copy the secure invite link above and send it directly.
+              </p>
+            </div>
           </div>
         </Card>
       )}

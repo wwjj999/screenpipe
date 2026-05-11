@@ -12,18 +12,20 @@ import { localFetch } from "@/lib/api";
 import { platform as getPlatform } from "@tauri-apps/plugin-os";
 
 import { syncManagedPipes, gatherPipeStatuses, type ManagedPipe } from "./use-enterprise-pipes";
-
-interface ManagedAiPreset {
-  provider: string;
-  url: string;
-  model: string;
-  api_key: string;
-}
+import {
+  DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
+  EnterpriseAiPresetPolicy,
+  EnterpriseManagedAiPreset,
+  filterPresetsForEnterprisePolicy,
+  isEnterpriseManagedPreset,
+  normalizeEnterpriseAiPresetPolicy,
+} from "@/lib/enterprise-ai-preset-policy";
 
 interface EnterprisePolicy {
   hiddenSections: string[];
   lockedSettings: Record<string, unknown>;
-  managedAiPreset: ManagedAiPreset | null;
+  managedAiPreset: EnterpriseManagedAiPreset | null;
+  aiPresetPolicy: EnterpriseAiPresetPolicy;
   managedPipes: ManagedPipe[];
   orgName: string;
 }
@@ -32,6 +34,7 @@ const EMPTY_POLICY: EnterprisePolicy = {
   hiddenSections: [],
   lockedSettings: {},
   managedAiPreset: null,
+  aiPresetPolicy: DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
   managedPipes: [],
   orgName: "",
 };
@@ -43,6 +46,80 @@ const ENTERPRISE_DEFAULT_HIDDEN = ["account", "referral"];
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 const CACHE_KEY = "enterprise-policy-cache";
+
+function toLocalAiPreset(
+  preset: EnterpriseManagedAiPreset,
+  defaultPreset: boolean
+): Record<string, unknown> {
+  const provider = preset.provider === "screenpipe-cloud" ? "screenpipe-cloud" : preset.provider;
+  return {
+    id: preset.id,
+    prompt: preset.prompt || "",
+    provider,
+    url: preset.url || "",
+    model: preset.model || "",
+    defaultPreset,
+    apiKey: preset.api_key || undefined,
+    maxContextChars: preset.max_context_chars || 512000,
+    maxTokens: preset.max_tokens || 4096,
+    enterpriseManaged: true,
+  };
+}
+
+async function applyAiPresetPolicy(policy: EnterpriseAiPresetPolicy): Promise<void> {
+  const store = await getStore();
+  const settings = (await store.get<Record<string, unknown>>("settings")) || {};
+  const currentPresets = ((settings.aiPresets as any[]) || []).filter(
+    (preset) => !isEnterpriseManagedPreset(preset)
+  );
+  const suppressedPresets = ((settings.enterpriseSuppressedAiPresets as any[]) || []).filter(
+    (preset) => !isEnterpriseManagedPreset(preset)
+  );
+  const candidatePresets = [...currentPresets, ...suppressedPresets].filter(
+    (preset, index, all) =>
+      all.findIndex((other) => String(other.id).toLowerCase() === String(preset.id).toLowerCase()) === index
+  );
+
+  const managedPresets = policy.managed_presets.map((preset) =>
+    toLocalAiPreset(preset, policy.lock_default_preset && policy.default_preset_id === preset.id)
+  );
+  const managedIds = new Set(managedPresets.map((preset) => String(preset.id).toLowerCase()));
+
+  const allowedPresets = filterPresetsForEnterprisePolicy(candidatePresets as any, policy).filter(
+    (preset: any) => !managedIds.has(String(preset.id).toLowerCase())
+  );
+  const allowedIds = new Set(allowedPresets.map((preset: any) => String(preset.id).toLowerCase()));
+  const nextSuppressedPresets = candidatePresets.filter(
+    (preset) => !allowedIds.has(String(preset.id).toLowerCase())
+  );
+
+  let nextPresets = [...managedPresets, ...allowedPresets] as any[];
+  const hasDefault = nextPresets.some((preset) => preset.defaultPreset);
+  const forcedDefaultId = policy.lock_default_preset ? policy.default_preset_id : null;
+  const fallbackDefaultId =
+    policy.default_preset_id && nextPresets.some((preset) => preset.id === policy.default_preset_id)
+      ? policy.default_preset_id
+      : nextPresets[0]?.id;
+
+  if (forcedDefaultId && nextPresets.some((preset) => preset.id === forcedDefaultId)) {
+    nextPresets = nextPresets.map((preset) => ({
+      ...preset,
+      defaultPreset: preset.id === forcedDefaultId,
+    }));
+  } else if (!hasDefault && fallbackDefaultId) {
+    nextPresets = nextPresets.map((preset, index) => ({
+      ...preset,
+      defaultPreset: preset.id === fallbackDefaultId || (!fallbackDefaultId && index === 0),
+    }));
+  }
+
+  await store.set("settings", {
+    ...settings,
+    aiPresets: nextPresets,
+    enterpriseSuppressedAiPresets: nextSuppressedPresets,
+  });
+  await store.save();
+}
 
 /**
  * Fire-and-forget heartbeat to report device status to the enterprise API.
@@ -159,6 +236,9 @@ export function useEnterprisePolicy() {
         return { ok: false, reason: "network_error" };
       }
       const data = await res.json();
+      const aiPresetPolicy = normalizeEnterpriseAiPresetPolicy(
+        data.aiPresetPolicy ?? data.managedAiPreset ?? null
+      );
       const lockedKeys = Object.keys(data.lockedSettings || {});
       const allHidden = [
         ...ENTERPRISE_DEFAULT_HIDDEN,
@@ -169,6 +249,7 @@ export function useEnterprisePolicy() {
         hiddenSections: [...new Set(allHidden)],
         lockedSettings: data.lockedSettings || {},
         managedAiPreset: data.managedAiPreset || null,
+        aiPresetPolicy,
         managedPipes: data.managedPipes || [],
         orgName: data.orgName || "",
       };
@@ -180,46 +261,15 @@ export function useEnterprisePolicy() {
       // Fire-and-forget heartbeat
       sendHeartbeat(licenseKey);
 
-      // Apply managed AI preset to settings store if configured
-      if (result.managedAiPreset) {
+      // Apply enterprise AI preset policy to settings store.
+      if (result.aiPresetPolicy) {
         try {
-          const store = await getStore();
-          const settings = (await store.get<Record<string, unknown>>("settings")) || {};
-          const presets = (settings.aiPresets as any[]) || [];
-          const managedId = "enterprise-managed";
-          const mp = result.managedAiPreset;
-
-          // Map provider string to AIProviderType
-          const providerMap: Record<string, string> = {
-            openai: "openai",
-            anthropic: "anthropic",
-            "native-ollama": "native-ollama",
-            custom: "custom",
-          };
-
-          const managedPreset = {
-            id: managedId,
-            prompt: "",
-            provider: providerMap[mp.provider] || "openai",
-            url: mp.url || "",
-            model: mp.model || "",
-            defaultPreset: true,
-            apiKey: mp.api_key || undefined,
-            maxContextChars: 512000,
-            maxTokens: 4096,
-          };
-
-          // Replace existing managed preset or prepend
-          const filtered = presets.filter((p: any) => p.id !== managedId);
-          // Unset defaultPreset on all others
-          const updated = filtered.map((p: any) => ({ ...p, defaultPreset: false }));
-          const newPresets = [managedPreset, ...updated];
-
-          await store.set("settings", { ...settings, aiPresets: newPresets });
-          await store.save();
-          console.log(`[enterprise] applied managed AI preset: ${mp.provider}/${mp.model}`);
+          await applyAiPresetPolicy(result.aiPresetPolicy);
+          console.log(
+            `[enterprise] applied AI preset policy: cloud=${result.aiPresetPolicy.allow_screenpipe_cloud}, employee=${result.aiPresetPolicy.allow_employee_custom_presets}, managed=${result.aiPresetPolicy.managed_presets.length}`
+          );
         } catch (e) {
-          console.warn("[enterprise] failed to apply managed AI preset:", e);
+          console.warn("[enterprise] failed to apply AI preset policy:", e);
         }
       }
 

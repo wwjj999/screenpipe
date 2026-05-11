@@ -58,7 +58,12 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { AIPreset, commands } from "@/lib/utils/tauri";
 import { ensureChatGptPreset } from "@/lib/utils/chatgpt-preset";
-import { useIsEnterpriseBuild } from "@/lib/hooks/use-is-enterprise-build";
+import { useEnterprisePolicy } from "@/lib/hooks/use-enterprise-policy";
+import {
+  DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
+  filterPresetsForEnterprisePolicy,
+  isEnterpriseManagedPreset,
+} from "@/lib/enterprise-ai-preset-policy";
 
 // Helper to detect UUID-like strings and format preset names nicely
 const formatPresetName = (name: string): string => {
@@ -189,7 +194,8 @@ export function AIProviderConfig({
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [idError, setIdError] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
-  const isEnterprise = useIsEnterpriseBuild();
+  const { isEnterprise, policy: enterprisePolicy } = useEnterprisePolicy();
+  const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
   const [piAvailable, setPiAvailable] = useState(false);
   const [piModels, setPiModels] = useState<{ id: string; name: string; free?: boolean; cost_tier?: string; recommended_for?: string[]; warning?: string; health?: { status: string; error_rate_5m: number } }[]>([]);
 
@@ -234,13 +240,17 @@ export function AIProviderConfig({
         console.error("Failed to check pi:", e);
       }
     };
+    if (isEnterprise) {
+      setPiAvailable(aiPresetPolicy.allow_screenpipe_cloud);
+      return;
+    }
     if (!isEnterprise) {
       checkPi();
     }
     // Re-check periodically in case background install finishes
     const interval = isEnterprise ? null : setInterval(checkPi, 5000);
     return () => { if (interval) clearInterval(interval); };
-  }, [isEnterprise]);
+  }, [isEnterprise, aiPresetPolicy.allow_screenpipe_cloud]);
   const [formData, setFormData] = useState<AIPreset>({
     provider: defaultPreset?.provider || "openai",
     apiKey: defaultPreset?.apiKey || "",
@@ -1059,22 +1069,24 @@ export const AIPresetsSelector = ({
   >();
 
   const isControlled = onControlledSelect !== undefined;
-  const isEnterprise = useIsEnterpriseBuild();
+  const { isEnterprise, policy: enterprisePolicy } = useEnterprisePolicy();
+  const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
+  const canManageEmployeePresets = !isEnterprise || aiPresetPolicy.allow_employee_custom_presets;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const aiPresets = useMemo(() => {
     const presets = (settings?.aiPresets || []) as AIPreset[];
-    return isEnterprise ? presets.filter((p) => p.provider !== "screenpipe-cloud") : presets;
-  }, [settings?.aiPresets, isEnterprise]);
+    return isEnterprise ? filterPresetsForEnterprisePolicy(presets, aiPresetPolicy) : presets;
+  }, [settings?.aiPresets, isEnterprise, aiPresetPolicy]);
 
   const selectedPreset = useMemo(() => {
     if (isControlled) return controlledPresetId ?? undefined;
     // Use the first preset or default preset
-    const defaultPreset = settings?.aiPresets?.find(
+    const defaultPreset = aiPresets.find(
       (preset) => preset.defaultPreset,
     );
-    return defaultPreset?.id || settings?.aiPresets?.[0]?.id || undefined;
-  }, [settings?.aiPresets, isControlled, controlledPresetId]);
+    return defaultPreset?.id || aiPresets[0]?.id || undefined;
+  }, [aiPresets, isControlled, controlledPresetId]);
 
   // Check if selected preset requires login
   const selectedPresetRequiresLogin = useMemo(() => {
@@ -1123,6 +1135,13 @@ export const AIPresetsSelector = ({
   }, [aiPresets, selectedPreset, updateSettings, shortcutKey]);
 
   const handleSavePreset = (preset: Partial<AIPreset>) => {
+    if (!canManageEmployeePresets) {
+      toast.error("Managed by your organization", {
+        description: "Your admin controls which AI presets are available",
+      });
+      return;
+    }
+
     if (!preset.id) {
       toast.error("Please enter a name for this preset", {
         description: "Name is required",
@@ -1251,6 +1270,13 @@ export const AIPresetsSelector = ({
   };
 
   const handleDuplicatePreset = (preset: AIPreset) => {
+    if (!canManageEmployeePresets || isEnterpriseManagedPreset(preset)) {
+      toast.error("Managed by your organization", {
+        description: "Your admin controls which AI presets are available",
+      });
+      return;
+    }
+
     const baseName = preset.id.replace(/ \d+$/, "");
     let counter = 2;
     let newName = `${baseName} ${counter}`;
@@ -1267,6 +1293,13 @@ export const AIPresetsSelector = ({
   };
 
   const handleEditPreset = (preset: AIPreset) => {
+    if (!canManageEmployeePresets || isEnterpriseManagedPreset(preset)) {
+      toast.error("Managed by your organization", {
+        description: "Your admin controls which AI presets are available",
+      });
+      return;
+    }
+
     setSelectedPresetToEdit(preset);
     setDialogOpen(true);
   };
@@ -1274,6 +1307,12 @@ export const AIPresetsSelector = ({
   const handleSetDefaultPreset = (preset: AIPreset) => {
     if (!settings?.aiPresets) return;
     if (preset.defaultPreset) return;
+    if (isEnterprise && aiPresetPolicy.lock_default_preset) {
+      toast.error("Default preset is locked", {
+        description: "Your admin controls the default AI preset",
+      });
+      return;
+    }
 
     const updatedPresets = settings.aiPresets.map((p) => ({
       ...p,
@@ -1296,6 +1335,13 @@ export const AIPresetsSelector = ({
 
   const handleRemovePreset = (preset: AIPreset) => {
     if (!settings?.aiPresets) return;
+    if (!canManageEmployeePresets || isEnterpriseManagedPreset(preset)) {
+      toast.error("Managed by your organization", {
+        description: "Your admin controls which AI presets are available",
+      });
+      return;
+    }
+
     // Prevent deletion of screenpipe-cloud preset for Pro subscribers
     if (preset.provider === "screenpipe-cloud" && settings.user?.cloud_subscribed) {
       toast.error("Cannot delete cloud preset", {
@@ -1441,7 +1487,7 @@ export const AIPresetsSelector = ({
                     </CommandItem>
                   </CommandGroup>
                 )}
-                {recommendedPresets && recommendedPresets.length > 0 && (
+                {canManageEmployeePresets && recommendedPresets && recommendedPresets.length > 0 && (
                   <CommandGroup heading="Recommended Presets">
                     {recommendedPresets.map((preset) => (
                       <CommandItem
@@ -1517,8 +1563,8 @@ export const AIPresetsSelector = ({
                         // so string comparison against preset.id would fail
                         if (isControlled) {
                           onControlledSelect(preset.id);
-                        } else if (preset.id !== selectedPreset) {
-                          const updatedPresets = aiPresets.map((p) => ({
+                        } else if (preset.id !== selectedPreset && !aiPresetPolicy.lock_default_preset) {
+                          const updatedPresets = (settings.aiPresets || []).map((p) => ({
                             ...p,
                             defaultPreset: p.id === preset.id,
                           }));
@@ -1564,29 +1610,7 @@ export const AIPresetsSelector = ({
                             </span>
                           </div>
                           <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 shrink-0"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditPreset(preset);
-                              }}
-                            >
-                              <Edit2 className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 shrink-0"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDuplicatePreset(preset);
-                              }}
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </Button>
-                            {!preset.defaultPreset && (
+                            {canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && (
                               <>
                                 <Button
                                   variant="ghost"
@@ -1594,10 +1618,10 @@ export const AIPresetsSelector = ({
                                   className="h-6 w-6 shrink-0"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleSetDefaultPreset(preset);
+                                    handleEditPreset(preset);
                                   }}
                                 >
-                                  <Star className="h-3.5 w-3.5" />
+                                  <Edit2 className="h-3.5 w-3.5" />
                                 </Button>
                                 <Button
                                   variant="ghost"
@@ -1605,12 +1629,38 @@ export const AIPresetsSelector = ({
                                   className="h-6 w-6 shrink-0"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleRemovePreset(preset);
+                                    handleDuplicatePreset(preset);
                                   }}
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Copy className="h-3.5 w-3.5" />
                                 </Button>
                               </>
+                            )}
+                            {!preset.defaultPreset && !aiPresetPolicy.lock_default_preset && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSetDefaultPreset(preset);
+                                }}
+                              >
+                                <Star className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                            {!preset.defaultPreset && canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemovePreset(preset);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
                             )}
                           </div>
                         </div>
@@ -1618,18 +1668,20 @@ export const AIPresetsSelector = ({
                     </CommandItem>
                   ))}
                 </CommandGroup>
-                <CommandGroup>
-                  <CommandItem
-                    onSelect={() => {
-                      setOpen(false);
-                      setSelectedPresetToEdit(undefined);
-                      setDialogOpen(true);
-                    }}
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    create new preset
-                  </CommandItem>
-                </CommandGroup>
+                {canManageEmployeePresets && (
+                  <CommandGroup>
+                    <CommandItem
+                      onSelect={() => {
+                        setOpen(false);
+                        setSelectedPresetToEdit(undefined);
+                        setDialogOpen(true);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      create new preset
+                    </CommandItem>
+                  </CommandGroup>
+                )}
               </CommandList>
             </Command>
           </PopoverContent>

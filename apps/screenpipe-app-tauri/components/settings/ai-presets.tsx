@@ -85,7 +85,7 @@ import { Badge } from "../ui/badge";
 import { toast } from "../ui/use-toast";
 import { Card, CardContent } from "../ui/card";
 import { AIProviderType } from "@/lib/hooks/use-settings";
-import { useIsEnterpriseBuild } from "@/lib/hooks/use-is-enterprise-build";
+import { useEnterprisePolicy } from "@/lib/hooks/use-enterprise-policy";
 import { useTeam } from "@/lib/hooks/use-team";
 import {
   AlertDialog,
@@ -107,6 +107,11 @@ import {
   debounce,
   FieldValidationResult
 } from "@/lib/utils/validation";
+import {
+  DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
+  filterPresetsForEnterprisePolicy,
+  isEnterpriseManagedPreset,
+} from "@/lib/enterprise-ai-preset-policy";
 
 // Helper to detect UUID-like strings and format preset names nicely
 const formatPresetName = (name: string): string => {
@@ -244,7 +249,10 @@ const AISection = ({
   piAvailable?: boolean;
 }) => {
   const { settings, updateSettings } = useSettings();
-  const isEnterprise = useIsEnterpriseBuild();
+  const { isEnterprise, policy: enterprisePolicy } = useEnterprisePolicy();
+  const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
+  const employeePresetsAllowed =
+    !isEnterprise || aiPresetPolicy.allow_employee_custom_presets || (preset ? isEnterpriseManagedPreset(preset) : false);
   // Daily quota snapshot — drives the "N left today" chip on weighted
   // models. Null on BYOK providers; we render nothing in that case.
   const usage = useUsageStatus();
@@ -266,8 +274,11 @@ const AISection = ({
 
   // Filter presets the same way the UI does so hidden presets don't block creation
   const visiblePresets = useMemo(
-    () => settings.aiPresets.filter((p) => !isEnterprise || p.provider !== "screenpipe-cloud"),
-    [settings.aiPresets, isEnterprise]
+    () =>
+      !isEnterprise
+        ? settings.aiPresets
+        : filterPresetsForEnterprisePolicy(settings.aiPresets, aiPresetPolicy),
+    [settings.aiPresets, isEnterprise, aiPresetPolicy]
   );
 
   // Optimized validation with debouncing
@@ -345,6 +356,15 @@ const AISection = ({
   }, [validationErrors, settingsPreset]);
 
   const updateStoreSettings = async () => {
+    if (!employeePresetsAllowed) {
+      toast({
+        title: "Managed by your organization",
+        description: "Your admin controls which AI presets are available",
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (!isFormValid) {
       toast({
         title: "Validation errors",
@@ -1199,7 +1219,7 @@ const AISection = ({
             onClick={() => handleAiProviderChange("native-ollama")}
           />
 
-          {piAvailable && (
+          {piAvailable && (!isEnterprise || aiPresetPolicy.allow_screenpipe_cloud) && (
             <AIProviderCard
               type="screenpipe-cloud"
               title="Screenpipe Cloud"
@@ -1825,6 +1845,8 @@ function SortablePresetCard({
   onShareToTeam,
   isLoading,
   isTeamAdmin,
+  readOnly = false,
+  defaultLocked = false,
 }: {
   preset: AIPreset;
   isDefault: boolean;
@@ -1836,6 +1858,8 @@ function SortablePresetCard({
   onShareToTeam?: () => void;
   isLoading: boolean;
   isTeamAdmin?: boolean;
+  readOnly?: boolean;
+  defaultLocked?: boolean;
 }) {
   const {
     attributes,
@@ -1844,7 +1868,7 @@ function SortablePresetCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: preset.id });
+  } = useSortable({ id: preset.id, disabled: readOnly });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1858,11 +1882,12 @@ function SortablePresetCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "p-3 relative group transition-all hover:shadow-md border-border bg-card cursor-pointer",
+        "p-3 relative group transition-all hover:shadow-md border-border bg-card",
+        readOnly ? "cursor-default" : "cursor-pointer",
         isDefault && "ring-2 ring-primary/20",
         isDragging && "shadow-lg"
       )}
-      onClick={onEdit}
+      onClick={readOnly ? undefined : onEdit}
     >
       <div className="space-y-2">
         <div className="flex justify-between items-center">
@@ -1889,6 +1914,11 @@ function SortablePresetCard({
                 default
               </Badge>
             )}
+            {readOnly && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                managed
+              </Badge>
+            )}
             {!hasValidation && (
               <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
             )}
@@ -1905,13 +1935,13 @@ function SortablePresetCard({
           </span>
         </div>
         <div className="flex items-center gap-0.5 pt-1.5 border-t border-border">
-          <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2" onClick={(e) => { e.stopPropagation(); onDuplicate(); }} disabled={isLoading}>
+          <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2" onClick={(e) => { e.stopPropagation(); onDuplicate(); }} disabled={isLoading || readOnly}>
             <Copy className="w-3 h-3 mr-1" />duplicate
           </Button>
-          <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2" onClick={(e) => { e.stopPropagation(); onSetDefault(); }} disabled={isLoading || isDefault}>
+          <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2" onClick={(e) => { e.stopPropagation(); onSetDefault(); }} disabled={isLoading || isDefault || defaultLocked}>
             <Star className="w-3 h-3 mr-1" />{isDefault ? "default" : "set default"}
           </Button>
-          {isTeamAdmin && onShareToTeam && (
+          {isTeamAdmin && onShareToTeam && !readOnly && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1923,7 +1953,7 @@ function SortablePresetCard({
               </Tooltip>
             </TooltipProvider>
           )}
-          {!isDefault && (
+          {!isDefault && !readOnly && (
             <Button variant="ghost" size="sm" className="text-[11px] h-6 px-2 text-destructive hover:text-destructive ml-auto" onClick={(e) => { e.stopPropagation(); onDelete(); }} disabled={isLoading}>
               <Trash2 className="w-3 h-3" />
             </Button>
@@ -1944,7 +1974,16 @@ export const AIPresets = () => {
     null
   );
   const [isDuplicating, setIsDuplicating] = useState(false);
-  const isEnterprise = useIsEnterpriseBuild();
+  const { isEnterprise, policy: enterprisePolicy } = useEnterprisePolicy();
+  const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
+  const visiblePresets = useMemo(
+    () =>
+      !isEnterprise
+        ? settings.aiPresets
+        : filterPresetsForEnterprisePolicy(settings.aiPresets, aiPresetPolicy),
+    [settings.aiPresets, isEnterprise, aiPresetPolicy]
+  );
+  const canManageEmployeePresets = !isEnterprise || aiPresetPolicy.allow_employee_custom_presets;
   const [piAvailable, setPiAvailable] = useState(false);
   const team = useTeam();
   const isTeamAdmin = !!team.team && team.role === "admin";
@@ -1988,13 +2027,17 @@ export const AIPresets = () => {
         setPiAvailable(true);
       }
     };
+    if (isEnterprise) {
+      setPiAvailable(aiPresetPolicy.allow_screenpipe_cloud);
+      return;
+    }
     if (!isEnterprise) {
       checkPi();
     }
     // Re-check periodically in case background install finishes
     const interval = isEnterprise ? null : setInterval(checkPi, 5000);
     return () => { if (interval) clearInterval(interval); };
-  }, [isEnterprise]);
+  }, [isEnterprise, aiPresetPolicy.allow_screenpipe_cloud]);
 
   useEffect(() => {
     if (!createPresetsDialog) {
@@ -2018,6 +2061,17 @@ export const AIPresets = () => {
     try {
       // Prevent deletion of screenpipe-cloud preset for Pro subscribers
       const presetToRemove = settings.aiPresets.find((preset) => preset.id === id);
+      if (
+        isEnterprise &&
+        ((presetToRemove && isEnterpriseManagedPreset(presetToRemove)) || !aiPresetPolicy.allow_employee_custom_presets)
+      ) {
+        toast({
+          title: "Managed by your organization",
+          description: "Your admin controls which AI presets are available",
+          variant: "destructive",
+        });
+        return;
+      }
       if (presetToRemove?.provider === "screenpipe-cloud" && settings.user?.cloud_subscribed) {
         toast({
           title: "Cannot delete cloud preset",
@@ -2080,6 +2134,15 @@ export const AIPresets = () => {
   const setDefaultPreset = async (id: string) => {
     setIsLoading(true);
     try {
+      if (isEnterprise && aiPresetPolicy.lock_default_preset) {
+        toast({
+          title: "Default preset is locked",
+          description: "Your admin controls the default AI preset",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const selectedPreset = settings.aiPresets.find((p) => p.id === id);
       if (!selectedPreset) return;
 
@@ -2121,6 +2184,17 @@ export const AIPresets = () => {
   const duplicatePreset = async (id: string) => {
     const presetToDuplicate = settings.aiPresets.find((p) => p.id === id);
     if (!presetToDuplicate) return;
+    if (
+      isEnterprise &&
+      (isEnterpriseManagedPreset(presetToDuplicate) || !aiPresetPolicy.allow_employee_custom_presets)
+    ) {
+      toast({
+        title: "Managed by your organization",
+        description: "Your admin controls which AI presets are available",
+        variant: "destructive",
+      });
+      return;
+    }
 
     // Find a unique name by appending a number
     const baseName = presetToDuplicate.id.replace(/ \d+$/, "");
@@ -2142,7 +2216,7 @@ export const AIPresets = () => {
     setCreatePresentDialog(true);
   };
 
-  if (!settings.aiPresets?.length) {
+  if (!visiblePresets.length) {
     return (
       <div className="space-y-5">
         <p className="text-muted-foreground text-sm mb-4">
@@ -2155,13 +2229,16 @@ export const AIPresets = () => {
             No AI presets yet
           </h2>
           <p className="text-sm text-muted-foreground text-center max-w-md">
-            Create your first AI preset to get started with intelligent features.
-            Presets allow you to quickly switch between different AI configurations.
+            {canManageEmployeePresets
+              ? "Create your first AI preset to get started with intelligent features. Presets allow you to quickly switch between different AI configurations."
+              : "Your organization has not made any AI presets available on this device."}
           </p>
-          <Button onClick={() => setCreatePresentDialog(true)} size="lg">
-            <Plus className="w-4 h-4 mr-2" />
-            Create Your First Preset
-          </Button>
+          {canManageEmployeePresets && (
+            <Button onClick={() => setCreatePresentDialog(true)} size="lg">
+              <Plus className="w-4 h-4 mr-2" />
+              Create Your First Preset
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -2176,7 +2253,7 @@ export const AIPresets = () => {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Badge variant="outline" className="px-3 py-1">
-            {settings.aiPresets.length} preset{settings.aiPresets.length !== 1 ? 's' : ''}
+            {visiblePresets.length} preset{visiblePresets.length !== 1 ? 's' : ''}
           </Badge>
           {settings.aiPresets.some(p => p.defaultPreset) && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -2185,37 +2262,46 @@ export const AIPresets = () => {
             </div>
           )}
         </div>
-        <Button onClick={() => setCreatePresentDialog(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Create Preset
-        </Button>
+        {canManageEmployeePresets && (
+          <Button onClick={() => setCreatePresentDialog(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Create Preset
+          </Button>
+        )}
       </div>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext
-          items={settings.aiPresets.filter((preset) => !isEnterprise || preset.provider !== "screenpipe-cloud").map((p) => p.id)}
+          items={visiblePresets.map((p) => p.id)}
           strategy={rectSortingStrategy}
         >
           <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-3">
-            {settings.aiPresets.filter((preset) => !isEnterprise || preset.provider !== "screenpipe-cloud").map((preset) => (
-              <SortablePresetCard
-                key={preset.id}
-                preset={preset}
-                isDefault={preset.defaultPreset}
-                hasValidation={!!(preset.provider && preset.model && preset.url)}
-                onEdit={() => {
-                  setSelectedPreset(preset);
-                  setIsDuplicating(false);
-                  setCreatePresentDialog(true);
-                }}
-                onDuplicate={() => duplicatePreset(preset.id)}
-                onSetDefault={() => setPresetToSetDefault(preset.id)}
-                onDelete={() => setPresetToDelete(preset.id)}
-                onShareToTeam={isTeamAdmin ? () => sharePresetToTeam(preset) : undefined}
-                isLoading={isLoading}
-                isTeamAdmin={isTeamAdmin}
-              />
-            ))}
+            {visiblePresets.map((preset) => {
+              const readOnly =
+                isEnterprise &&
+                (!aiPresetPolicy.allow_employee_custom_presets || isEnterpriseManagedPreset(preset));
+              return (
+                <SortablePresetCard
+                  key={preset.id}
+                  preset={preset}
+                  isDefault={preset.defaultPreset}
+                  hasValidation={!!(preset.provider && preset.model && (preset.url || preset.provider === "screenpipe-cloud" || preset.provider === "openai-chatgpt"))}
+                  onEdit={() => {
+                    setSelectedPreset(preset);
+                    setIsDuplicating(false);
+                    setCreatePresentDialog(true);
+                  }}
+                  onDuplicate={() => duplicatePreset(preset.id)}
+                  onSetDefault={() => setPresetToSetDefault(preset.id)}
+                  onDelete={() => setPresetToDelete(preset.id)}
+                  onShareToTeam={isTeamAdmin ? () => sharePresetToTeam(preset) : undefined}
+                  isLoading={isLoading}
+                  isTeamAdmin={isTeamAdmin}
+                  readOnly={readOnly}
+                  defaultLocked={isEnterprise && aiPresetPolicy.lock_default_preset}
+                />
+              );
+            })}
           </div>
         </SortableContext>
       </DndContext>
