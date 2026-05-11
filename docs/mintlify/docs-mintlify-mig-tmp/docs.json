@@ -45,6 +45,10 @@
             "group": "reference",
             "pages": ["cli-reference"]
           },
+          {
+            "group": "deployment",
+            "pages": ["intune-deployment"]
+          },
 
           {
             "group": "compare",
