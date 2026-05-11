@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{debug, info, warn};
@@ -107,14 +107,24 @@ impl Worker {
         self.status.lock().await.clone()
     }
 
-    /// Spawn the worker on the current tokio runtime. Returns the
-    /// task handle — caller is responsible for graceful shutdown
-    /// (e.g. `handle.abort()` on app close).
+    /// Spawn the worker on the current tokio runtime. Without a shutdown
+    /// signal — left for tests + the standalone CLI. Production callers
+    /// should use [`Self::spawn_with_shutdown`] so the worker exits before
+    /// the tokio runtime tears down (otherwise in-flight sqlx queries
+    /// holding `tokio::time::timeout` futures panic with "A Tokio 1.x
+    /// context was found, but it is being shutdown.").
     pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(self.run())
+        tokio::spawn(self.run(None))
     }
 
-    async fn run(self) {
+    /// Spawn with a shutdown signal. The worker exits cleanly on the next
+    /// `shutdown.notify_waiters()` call (or on the next loop boundary if
+    /// it's mid-batch when the signal fires). Use this from `ServerCore`.
+    pub fn spawn_with_shutdown(self, shutdown: Arc<Notify>) -> JoinHandle<()> {
+        tokio::spawn(self.run(Some(shutdown)))
+    }
+
+    async fn run(self, shutdown: Option<Arc<Notify>>) {
         info!(
             redactor = self.redactor.name(),
             version = self.redactor.version(),
@@ -126,33 +136,81 @@ impl Worker {
             s.running = true;
         }
 
+        // Helper: race a future against the optional shutdown signal.
+        // If shutdown fires, return None and the caller breaks out of the
+        // loop. Without a shutdown signal, just awaits the future.
+        async fn race<F: std::future::Future<Output = ()>>(
+            fut: F,
+            shutdown: Option<&Arc<Notify>>,
+        ) -> Option<()> {
+            match shutdown {
+                Some(n) => tokio::select! {
+                    _ = fut => Some(()),
+                    _ = n.notified() => None,
+                },
+                None => {
+                    fut.await;
+                    Some(())
+                }
+            }
+        }
+
         loop {
             if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
                 self.set_paused(true).await;
-                time::sleep(self.cfg.poll_interval).await;
+                if race(time::sleep(self.cfg.poll_interval), shutdown.as_ref())
+                    .await
+                    .is_none()
+                {
+                    info!("redact worker: shutdown signal received, exiting");
+                    return;
+                }
                 continue;
             }
             self.set_paused(false).await;
 
             let mut any_work = false;
             for table in &self.cfg.tables {
-                match self.process_table(*table).await {
-                    Ok(n) if n > 0 => any_work = true,
-                    Ok(_) => {}
-                    Err(e) => {
+                // Race the table work against shutdown so a long redact batch
+                // doesn't hold us through tokio teardown.
+                let result = match shutdown.as_ref() {
+                    Some(n) => tokio::select! {
+                        r = self.process_table(*table) => Some(r),
+                        _ = n.notified() => None,
+                    },
+                    None => Some(self.process_table(*table).await),
+                };
+                match result {
+                    None => {
+                        info!("redact worker: shutdown signal received mid-batch, exiting");
+                        return;
+                    }
+                    Some(Ok(n)) if n > 0 => any_work = true,
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
                         warn!(table = ?table, error = %e, "reconciliation error; will retry");
                         let mut s = self.status.lock().await;
                         s.last_error = Some(e.to_string());
+                        drop(s);
                         // backoff on error
-                        time::sleep(Duration::from_secs(2)).await;
+                        if race(time::sleep(Duration::from_secs(2)), shutdown.as_ref())
+                            .await
+                            .is_none()
+                        {
+                            return;
+                        }
                     }
                 }
             }
 
-            if any_work {
-                time::sleep(self.cfg.idle_between_batches).await;
+            let nap = if any_work {
+                self.cfg.idle_between_batches
             } else {
-                time::sleep(self.cfg.poll_interval).await;
+                self.cfg.poll_interval
+            };
+            if race(time::sleep(nap), shutdown.as_ref()).await.is_none() {
+                info!("redact worker: shutdown signal received, exiting");
+                return;
             }
         }
     }

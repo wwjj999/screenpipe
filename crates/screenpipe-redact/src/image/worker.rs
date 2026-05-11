@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::{Row, SqlitePool};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{debug, info, warn};
@@ -105,13 +105,24 @@ impl ImageWorker {
         self.status.lock().await.clone()
     }
 
-    /// Spawn on the current tokio runtime. Caller is responsible for
-    /// graceful shutdown via the returned join handle.
+    /// Spawn on the current tokio runtime, no shutdown signal — for tests
+    /// + the standalone CLI. Production callers should use
+    /// [`Self::spawn_with_shutdown`] so the worker exits before the tokio
+    /// runtime tears down (otherwise in-flight sqlx queries holding
+    /// `tokio::time::timeout` futures panic with "A Tokio 1.x context was
+    /// found, but it is being shutdown.").
     pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(self.run())
+        tokio::spawn(self.run(None))
     }
 
-    async fn run(self) {
+    /// Spawn with a shutdown signal. The worker exits cleanly on the next
+    /// `shutdown.notify_waiters()` call (or mid-frame if the signal fires
+    /// during a detect/redact). Use this from `ServerCore`.
+    pub fn spawn_with_shutdown(self, shutdown: Arc<Notify>) -> JoinHandle<()> {
+        tokio::spawn(self.run(Some(shutdown)))
+    }
+
+    async fn run(self, shutdown: Option<Arc<Notify>>) {
         info!(
             redactor = self.redactor.name(),
             version = self.redactor.version(),
@@ -122,28 +133,63 @@ impl ImageWorker {
             s.running = true;
         }
 
+        async fn race<F: std::future::Future<Output = ()>>(
+            fut: F,
+            shutdown: Option<&Arc<Notify>>,
+        ) -> Option<()> {
+            match shutdown {
+                Some(n) => tokio::select! {
+                    _ = fut => Some(()),
+                    _ = n.notified() => None,
+                },
+                None => {
+                    fut.await;
+                    Some(())
+                }
+            }
+        }
+
         loop {
             if self.paused.load(Ordering::SeqCst) {
                 self.set_paused(true).await;
-                time::sleep(self.cfg.poll_interval).await;
+                if race(time::sleep(self.cfg.poll_interval), shutdown.as_ref())
+                    .await
+                    .is_none()
+                {
+                    info!("image redact worker: shutdown signal received, exiting");
+                    return;
+                }
                 continue;
             }
             self.set_paused(false).await;
 
-            match self.process_one().await {
-                Ok(Some(_)) => {
-                    time::sleep(self.cfg.idle_between_frames).await;
+            let result = match shutdown.as_ref() {
+                Some(n) => tokio::select! {
+                    r = self.process_one() => Some(r),
+                    _ = n.notified() => None,
+                },
+                None => Some(self.process_one().await),
+            };
+
+            let nap = match result {
+                None => {
+                    info!("image redact worker: shutdown signal received mid-frame, exiting");
+                    return;
                 }
-                Ok(None) => {
-                    time::sleep(self.cfg.poll_interval).await;
-                }
-                Err(e) => {
+                Some(Ok(Some(_))) => self.cfg.idle_between_frames,
+                Some(Ok(None)) => self.cfg.poll_interval,
+                Some(Err(e)) => {
                     warn!(error = %e, "image reconciliation error; backing off");
                     let mut s = self.status.lock().await;
                     s.last_error = Some(e.to_string());
                     drop(s);
-                    time::sleep(Duration::from_secs(2)).await;
+                    Duration::from_secs(2)
                 }
+            };
+
+            if race(time::sleep(nap), shutdown.as_ref()).await.is_none() {
+                info!("image redact worker: shutdown signal received, exiting");
+                return;
             }
         }
     }

@@ -592,6 +592,23 @@ async fn main() {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_default();
 
+        // Suppress "tokio context being shutdown" panics from background
+        // tasks (redact workers, etc.) — these fire when a task is mid-
+        // sqlx/timer poll at the moment the runtime tears down on app
+        // quit. ServerCore::shutdown signals workers to exit cleanly, but
+        // a residual race is possible if the worker is inside an await
+        // that doesn't include the shutdown future. Either way, this is
+        // orderly-shutdown noise — not a crash — and logging it to
+        // last-panic.log + Sentry makes the app look unstable to users
+        // and skews crash-rate dashboards.
+        if payload.contains("Tokio 1.x context was found, but it is being shutdown") {
+            eprintln!(
+                "(suppressed tokio shutdown-time panic on thread '{}' at {})",
+                thread_name, location
+            );
+            return;
+        }
+
         // Force-capture a backtrace before abort() kills us
         let backtrace = std::backtrace::Backtrace::force_capture();
 

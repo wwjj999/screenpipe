@@ -25,6 +25,7 @@ use screenpipe_engine::{
     analytics, hot_frame_cache::HotFrameCache, power::PowerManagerHandle, server::bind_listener,
     start_power_manager_with_pref, start_sleep_monitor, RecordingConfig, ResourceMonitor, SCServer,
 };
+use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 /// Shared references that survive capture start/stop cycles.
@@ -44,6 +45,12 @@ pub struct ServerCore {
     /// Local API auth key — exposed to the frontend via Tauri command so
     /// localFetch can inject it synchronously (no async store race).
     pub local_api_key: Option<String>,
+    /// Shutdown signal for the redaction reconciliation workers. Fired
+    /// from `shutdown()` so the workers exit before the tokio runtime
+    /// tears down — otherwise their in-flight sqlx queries (which use
+    /// `tokio::time::timeout` internally) panic with "A Tokio 1.x context
+    /// was found, but it is being shutdown."
+    redact_shutdown: Arc<Notify>,
 }
 
 impl ServerCore {
@@ -484,6 +491,10 @@ impl ServerCore {
         let backend = config.pii_backend.as_str();
         let use_tinfoil = matches!(backend, "tinfoil" | "cloud" | "enclave");
 
+        // One shutdown signal, shared across both worker spawn paths and
+        // stored on Self for `shutdown()` to fire on app quit.
+        let redact_shutdown = Arc::new(Notify::new());
+
         if config.async_pii_redaction {
             use screenpipe_redact::adapters::opf::{OpfAdapter, OpfConfig};
             use screenpipe_redact::adapters::tinfoil::TinfoilRedactor;
@@ -514,13 +525,15 @@ impl ServerCore {
                     tables: ALL_TARGET_TABLES.to_vec(),
                     ..Default::default()
                 };
-                let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg).spawn();
+                let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg)
+                    .spawn_with_shutdown(redact_shutdown.clone());
             } else {
                 // Local mode: spawn the download+load off the boot path
                 // so a slow first-run HF pull doesn't block the app
                 // launch. The worker is created inside the spawned
                 // task once the model is ready.
                 let pool = db.pool.clone();
+                let shutdown = redact_shutdown.clone();
                 tokio::spawn(async move {
                     info!(
                         "fetching local OPF v6 checkpoint (~2.8 GB on first run, cached at \
@@ -550,7 +563,8 @@ impl ServerCore {
                         tables: ALL_TARGET_TABLES.to_vec(),
                         ..Default::default()
                     };
-                    let _ = Worker::new(pool, pipeline_arc, cfg).spawn();
+                    let _ = Worker::new(pool, pipeline_arc, cfg)
+                        .spawn_with_shutdown(shutdown);
                 });
             }
         }
@@ -566,11 +580,13 @@ impl ServerCore {
                 info!("starting async image-PII worker (backend=tinfoil)");
                 let detector =
                     Arc::new(TinfoilImageRedactor::from_env()) as Arc<dyn ImageRedactor>;
-                let _ = ImageWorker::new(pool, detector, ImageWorkerConfig::default()).spawn();
+                let _ = ImageWorker::new(pool, detector, ImageWorkerConfig::default())
+                    .spawn_with_shutdown(redact_shutdown.clone());
             } else {
                 // Local mode: rfdetr_v8 ONNX. First-run downloads
                 // ~108 MB from huggingface.co/screenpipe/pii-image-redactor
                 // and verifies SHA-256 before landing in ~/.screenpipe/models/.
+                let shutdown = redact_shutdown.clone();
                 tokio::spawn(async move {
                     match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
                         Ok(detector) => {
@@ -582,7 +598,7 @@ impl ServerCore {
                                 detector_arc,
                                 ImageWorkerConfig::default(),
                             )
-                            .spawn();
+                            .spawn_with_shutdown(shutdown);
                         }
                         Err(e) => {
                             warn!(
@@ -609,6 +625,7 @@ impl ServerCore {
             data_path,
             port: config.port,
             local_api_key: config.api_auth_key.clone(),
+            redact_shutdown,
         })
     }
 
@@ -616,6 +633,14 @@ impl ServerCore {
     pub async fn shutdown(self) {
         info!("Shutting down server core");
         screenpipe_connect::mdns::shutdown();
+
+        // Tell redaction workers to exit BEFORE the tokio runtime tears
+        // down — otherwise their in-flight sqlx queries panic with
+        // "A Tokio 1.x context was found, but it is being shutdown."
+        // Workers loop polling, so signaling early gives them headroom
+        // to land on a select! boundary and exit cleanly.
+        self.redact_shutdown.notify_waiters();
+        info!("Signaled redaction workers to shut down");
 
         // Stop pipe scheduler
         {
