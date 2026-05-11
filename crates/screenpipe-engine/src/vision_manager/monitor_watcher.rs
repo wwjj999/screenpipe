@@ -5,7 +5,7 @@
 //! Monitor Watcher - Polls for monitor connect/disconnect events
 
 use once_cell::sync::Lazy;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -39,8 +39,11 @@ pub async fn start_monitor_watcher(
     info!("Starting monitor watcher (polling every 5 seconds)");
 
     let handle = tokio::spawn(async move {
-        // Track monitors that were disconnected (for reconnection detection)
-        let mut known_monitors: HashSet<u32> = HashSet::new();
+        // Track monitors that were disconnected (for reconnection detection).
+        // Value is the human-readable display name at the time we last saw it,
+        // so the topology-changed event for a disconnect can carry a name even
+        // though the OS no longer enumerates the gone monitor.
+        let mut known_monitors: HashMap<u32, String> = HashMap::new();
         // Track permission state to avoid log spam
         let mut permission_denied_logged = false;
         // Track whether we stopped monitors due to DRM
@@ -56,7 +59,7 @@ pub async fn start_monitor_watcher(
         match list_monitors_detailed().await {
             Ok(monitors) => {
                 for monitor in &monitors {
-                    known_monitors.insert(monitor.id());
+                    known_monitors.insert(monitor.id(), monitor.name().to_string());
                 }
                 permission_denied_logged = false;
             }
@@ -122,7 +125,10 @@ pub async fn start_monitor_watcher(
                 suppress_next_topology_event = true;
                 // Re-populate known_monitors after restart
                 if let Ok(monitors) = list_monitors_detailed().await {
-                    known_monitors = monitors.iter().map(|m| m.id()).collect();
+                    known_monitors = monitors
+                        .iter()
+                        .map(|m| (m.id(), m.name().to_string()))
+                        .collect();
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
@@ -165,7 +171,10 @@ pub async fn start_monitor_watcher(
                 schedule_stopped = false;
                 suppress_next_topology_event = true;
                 if let Ok(monitors) = list_monitors_detailed().await {
-                    known_monitors = monitors.iter().map(|m| m.id()).collect();
+                    known_monitors = monitors
+                        .iter()
+                        .map(|m| (m.id(), m.name().to_string()))
+                        .collect();
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
@@ -228,7 +237,7 @@ pub async fn start_monitor_watcher(
             // get "started recording 4 monitors" on every restart.
             let initial_pass = active_ids.is_empty() && known_monitors.is_empty();
             let mut added: Vec<serde_json::Value> = Vec::new();
-            let mut removed: Vec<u32> = Vec::new();
+            let mut removed: Vec<serde_json::Value> = Vec::new();
 
             // Detect newly connected monitors (filtered by user selection)
             for monitor in &current_monitors {
@@ -243,12 +252,14 @@ pub async fn start_monitor_watcher(
                         continue;
                     }
 
-                    if known_monitors.contains(&monitor_id) {
+                    if known_monitors.contains_key(&monitor_id) {
                         info!("Monitor {} reconnected, resuming recording", monitor_id);
                     } else {
                         info!("New monitor {} detected, starting recording", monitor_id);
-                        known_monitors.insert(monitor_id);
                     }
+                    // Keep the name fresh (and insert if first time seen) so a
+                    // later disconnect can still report a human-readable name.
+                    known_monitors.insert(monitor_id, monitor.name().to_string());
 
                     match vision_manager.start_monitor(monitor_id).await {
                         Ok(()) => {
@@ -275,7 +286,19 @@ pub async fn start_monitor_watcher(
                 if !current_ids.contains(monitor_id) {
                     info!("Monitor {} disconnected, stopping recording", monitor_id);
                     match vision_manager.stop_monitor(*monitor_id).await {
-                        Ok(()) => removed.push(*monitor_id),
+                        Ok(()) => {
+                            // Use the last-known name for this id — the OS no
+                            // longer enumerates a disconnected display, so the
+                            // name has to come from our cache or be "unknown".
+                            let name = known_monitors
+                                .get(monitor_id)
+                                .cloned()
+                                .unwrap_or_else(|| format!("display {}", monitor_id));
+                            removed.push(serde_json::json!({
+                                "id": *monitor_id,
+                                "name": name,
+                            }));
+                        }
                         Err(e) => warn!(
                             "Failed to stop recording on monitor {}: {:?}",
                             monitor_id, e
