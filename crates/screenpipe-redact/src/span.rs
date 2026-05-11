@@ -70,3 +70,40 @@ pub struct RedactedSpan {
     /// callers who don't want to retain it should drop it themselves.
     pub text: String,
 }
+
+/// Per-label policy for the text pipeline — the text-side mirror of
+/// [`crate::image::ImageRedactionPolicy`]. Backends detect every class
+/// in the [`SpanLabel`] taxonomy; this policy decides which ones the
+/// pipeline actually rewrites.
+///
+/// Default: `allow=[Secret]`. We over-redact common nouns / numbers /
+/// names on the user-visible side (FPs of v6 cost search/LLM utility),
+/// while v6 still misses some PII (Louis Beaumont in legal-form UI
+/// patterns, real OpenAI keys in flowing chat). For production the
+/// safer trade-off right now is **secrets only** — that's the class
+/// where a miss is genuinely dangerous (credential leak) and where the
+/// model is strongest (secret_probe 31/34). Names/emails stay
+/// non-redacted until the model is reliable on them in the user's
+/// actual UI contexts.
+#[derive(Debug, Clone)]
+pub struct TextRedactionPolicy {
+    /// Span labels that are eligible for redaction. Spans with any
+    /// other label are dropped from the output before the redacted
+    /// text is rendered.
+    pub allow: Vec<SpanLabel>,
+}
+
+impl Default for TextRedactionPolicy {
+    fn default() -> Self {
+        Self {
+            allow: vec![SpanLabel::Secret],
+        }
+    }
+}
+
+impl TextRedactionPolicy {
+    /// Is this span eligible for redaction under the current policy?
+    pub fn allows(&self, label: SpanLabel) -> bool {
+        self.allow.iter().any(|l| *l == label)
+    }
+}

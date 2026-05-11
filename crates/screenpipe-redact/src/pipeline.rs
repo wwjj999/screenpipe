@@ -30,7 +30,8 @@ use async_trait::async_trait;
 use crate::{
     adapters::regex::{self as regex_adapter, RegexRedactor},
     cache::{cache_key, RedactionCache},
-    RedactError, RedactionOutput, Redactor,
+    span::TextRedactionPolicy,
+    RedactError, RedactedSpan, RedactionOutput, Redactor,
 };
 
 /// Knobs for the pipeline. All have sensible defaults.
@@ -42,6 +43,9 @@ pub struct PipelineConfig {
     /// Skip the AI fallback if the regex pass already detected at
     /// least this many spans — input is "covered enough" already.
     pub ai_skip_if_regex_spans: usize,
+    /// Which span classes are actually rewritten. Default: secrets
+    /// only. See [`TextRedactionPolicy`] for the rationale.
+    pub policy: TextRedactionPolicy,
 }
 
 impl Default for PipelineConfig {
@@ -49,8 +53,47 @@ impl Default for PipelineConfig {
         Self {
             ai_min_chars: 12,
             ai_skip_if_regex_spans: 5,
+            policy: TextRedactionPolicy::default(),
         }
     }
+}
+
+/// Drop spans whose label isn't in the policy, then rebuild `redacted`
+/// from `input` using only the surviving spans' placeholders. Caller
+/// must already have `spans` anchored to `input`.
+fn apply_policy(out: RedactionOutput, policy: &TextRedactionPolicy) -> RedactionOutput {
+    let kept: Vec<RedactedSpan> = out
+        .spans
+        .into_iter()
+        .filter(|s| policy.allows(s.label))
+        .collect();
+    let redacted = render_with_spans(&out.input, &kept);
+    RedactionOutput {
+        input: out.input,
+        redacted,
+        spans: kept,
+    }
+}
+
+/// Same shape as `adapters::regex::render_redacted`, kept private here
+/// to avoid widening the regex module's public surface.
+fn render_with_spans(text: &str, spans: &[RedactedSpan]) -> String {
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for span in spans {
+        if span.start < cursor {
+            // overlapping — defensive
+            continue;
+        }
+        out.push_str(&text[cursor..span.start]);
+        out.push_str(span.label.placeholder());
+        cursor = span.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 /// Bundles a regex pre-pass with an optional AI fallback.
@@ -118,7 +161,11 @@ impl Redactor for Pipeline {
             }
 
             let regex_out = regex_adapter::redact_one(text);
-            let mut current = regex_out;
+            // Apply policy to the regex pass: drop non-allowed labels +
+            // re-render `redacted` from `input` so the AI fallback sees
+            // a string with only allowed-class placeholders (currently:
+            // only `[SECRET]`). Spans remain anchored to the original.
+            let mut current = apply_policy(regex_out, &self.cfg.policy);
 
             // Decide whether to run the AI fallback.
             let want_ai = self.ai.is_some()
@@ -129,13 +176,16 @@ impl Redactor for Pipeline {
                 let ai = self.ai.as_ref().expect("checked above");
                 match ai.redact(&current.redacted).await {
                     Ok(ai_out) => {
-                        // Merge: keep the regex spans (they're real
-                        // and anchored to the original), and rewrite
-                        // the redacted output using the AI's version
-                        // (which operated on regex-rendered text).
+                        // Filter AI output to the same policy + re-render
+                        // its `redacted` from its `input` (= the
+                        // regex-redacted text). Now the AI's redacted
+                        // string carries only allowed-class
+                        // placeholders, alongside the regex pass's
+                        // already-allowed placeholders.
+                        let ai_filtered = apply_policy(ai_out, &self.cfg.policy);
                         current = RedactionOutput {
                             input: current.input,
-                            redacted: ai_out.redacted,
+                            redacted: ai_filtered.redacted,
                             spans: current.spans,
                         };
                     }
@@ -219,23 +269,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn regex_only_runs_without_ai() {
+    async fn regex_only_runs_without_ai_secret_policy() {
+        // Default policy is `allow=[Secret]`, so a bare email is NOT
+        // rewritten — only credentials are. This is the live shipping
+        // policy as of v2.4.189; see TextRedactionPolicy docs.
         let p = Pipeline::regex_only();
-        let out = p.redact("contact: alice@example.com").await.unwrap();
-        assert!(out.redacted.contains("[EMAIL]"));
+        let out = p
+            .redact("contact: alice@example.com sk-proj-ABCDEFGHIJKLMNOPQRST")
+            .await
+            .unwrap();
+        assert!(out.redacted.contains("alice@example.com"));
+        assert!(out.redacted.contains("[SECRET]"));
         assert_eq!(out.spans.len(), 1);
+        assert_eq!(out.spans[0].label, crate::SpanLabel::Secret);
     }
 
     #[tokio::test]
     async fn ai_runs_after_regex() {
         let ai = Arc::new(UppercaseAi::new());
         let p = Pipeline::regex_then_ai(ai.clone(), PipelineConfig::default());
-        let out = p
+        let _ = p
             .redact("hello world this is a long enough sentence")
             .await
             .unwrap();
-        // AI uppercased the regex-rendered text (which had no PII so was the same).
-        assert_eq!(out.redacted, "HELLO WORLD THIS IS A LONG ENOUGH SENTENCE");
+        // AI must have been invoked for an input that has no obvious
+        // regex match but is long enough to clear `ai_min_chars`.
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -271,11 +330,27 @@ mod tests {
             ..Default::default()
         };
         let p = Pipeline::regex_then_ai(ai.clone(), cfg);
-        // 3 emails in one input → regex finds 3 spans, ≥ 2 → skip AI.
+        // 3 secret-shape tokens → regex finds 3 spans, ≥ 2 → skip AI.
         let _ = p
-            .redact("a@b.com c@d.com e@f.com is the long enough text")
+            .redact("AKIAIOSFODNN7EXAMPLE ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 sk-proj-ABCDEFGHIJKLMNOPQRST extra long enough text")
             .await
             .unwrap();
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn default_policy_redacts_secrets_only() {
+        // Comprehensive guard: emails, phones, names, addresses, etc.
+        // must survive verbatim; only credentials are rewritten.
+        let p = Pipeline::regex_only();
+        let out = p
+            .redact("Alice <alice@example.com> 415-555-0142 sk-proj-ABCDEFGHIJKLMNOPQRST")
+            .await
+            .unwrap();
+        assert!(out.redacted.contains("Alice"));
+        assert!(out.redacted.contains("alice@example.com"));
+        assert!(out.redacted.contains("415-555-0142"));
+        assert!(out.redacted.contains("[SECRET]"));
+        assert!(out.spans.iter().all(|s| s.label == crate::SpanLabel::Secret));
     }
 }

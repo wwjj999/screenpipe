@@ -82,7 +82,7 @@ mod span;
 pub use error::RedactError;
 pub use image::{ImageRedactionPolicy, ImageRedactor, ImageRegion};
 pub use pipeline::{Pipeline, PipelineConfig};
-pub use span::{RedactedSpan, SpanLabel};
+pub use span::{RedactedSpan, SpanLabel, TextRedactionPolicy};
 
 use async_trait::async_trait;
 
