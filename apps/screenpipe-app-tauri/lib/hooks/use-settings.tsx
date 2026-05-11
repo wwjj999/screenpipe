@@ -250,6 +250,8 @@ export type Settings = SettingsStore & {
 		appUpdates: boolean;
 		pipeSuggestions: boolean;
 		pipeNotifications: boolean;
+		/** Toast when a monitor is plugged, unplugged, or switched (clamshell, dock). Default true. */
+		displayChanges?: boolean;
 		mutedPipes: string[];
 	};
 	/** Remote devices to monitor pipes on (LAN addresses) */

@@ -1880,7 +1880,7 @@ async fn main() {
                 }
             });
 
-            crate::monitor_events::start();
+            crate::monitor_events::start(app_handle.clone());
 
             #[cfg(target_os = "macos")]
             crate::window::reset_to_regular_and_refresh_tray(&app_handle);

@@ -20,6 +20,7 @@ const defaultPrefs = {
   appUpdates: true,
   pipeSuggestions: true,
   pipeNotifications: true,
+  displayChanges: true,
   mutedPipes: [] as string[],
 };
 
@@ -144,6 +145,20 @@ export function NotificationsSettings() {
           <Switch
             checked={prefs.pipeNotifications ?? true}
             onCheckedChange={(v) => updatePref("pipeNotifications", v)}
+          />
+        </div>
+
+        {/* Display changes */}
+        <div className="flex items-center justify-between py-3 border-b border-border">
+          <div>
+            <p className="text-sm font-medium">Display changes</p>
+            <p className="text-xs text-muted-foreground">
+              Toast when a monitor is plugged, unplugged, or switched (clamshell, dock)
+            </p>
+          </div>
+          <Switch
+            checked={prefs.displayChanges ?? true}
+            onCheckedChange={(v) => updatePref("displayChanges", v)}
           />
         </div>
       </div>

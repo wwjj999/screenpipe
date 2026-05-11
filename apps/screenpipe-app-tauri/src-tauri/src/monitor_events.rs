@@ -6,23 +6,48 @@
 //! vision_manager and surface them as user-facing notifications via `/notify`.
 
 use futures::StreamExt;
+use tauri::AppHandle;
 use tracing::debug;
 
 use crate::notifications::client;
+use crate::store::SettingsStore;
 
-pub fn start() {
+pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut sub = screenpipe_events::subscribe_to_event::<serde_json::Value>(
             "monitor_topology_changed",
         );
 
         while let Some(event) = sub.next().await {
+            if !display_changes_enabled(&app) {
+                debug!("monitor topology event → notify: skipped (display-change toasts disabled)");
+                continue;
+            }
             if let Some((title, body)) = format_event(&event.data) {
                 debug!("monitor topology event → notify: {} | {}", title, body);
                 client::send_typed(title, body, "system", Some(6000));
             }
         }
     });
+}
+
+/// Read `notificationPrefs.displayChanges` from the settings store.
+/// Default true (matches the frontend default). Missing store / parse
+/// failure also defaults to true — we'd rather show one extra toast
+/// than silently swallow plug events when the store hiccups.
+fn display_changes_enabled(app: &AppHandle) -> bool {
+    let settings = match SettingsStore::get(app) {
+        Ok(Some(s)) => s,
+        _ => return true,
+    };
+    let prefs = match settings.extra.get("notificationPrefs") {
+        Some(p) => p,
+        None => return true,
+    };
+    prefs
+        .get("displayChanges")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
 }
 
 /// Pretty display name. Falls back to a generic label when the payload
