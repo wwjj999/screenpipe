@@ -50,6 +50,16 @@ jobs:
         with:
           node-version: "20"
 
+      # Install pinned stable toolchain first (1.95+) — cpal fork's wasapi
+      # module uses windows-core 0.62 traits that don't resolve under the
+      # default 1.93.1 that rustup-init.exe currently ships. Matches the
+      # consumer release-app.yml setup which builds Windows x64 successfully.
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
       - name: Install Rust (Windows)
         run: |
           Invoke-WebRequest https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-gnu/rustup-init.exe -OutFile rustup-init.exe
