@@ -58,12 +58,12 @@
 //!   wants span detail they should use the regex pre-pass or a
 //!   span-aware adapter.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
-use tokio::sync::OnceCell;
+use tokio::sync::RwLock;
 
 use crate::{RedactError, RedactionOutput, Redactor};
 
@@ -75,6 +75,18 @@ const DEFAULT_ENCLAVE: &str = "pii.screenpipe.containers.tinfoil.dev";
 /// GitHub repo whose Sigstore-attested release measurement must match
 /// the running enclave (Step 2/3 of Tinfoil's verification).
 const DEFAULT_REPO: &str = "screenpipe/privacy-filter";
+/// Re-attest at least this often even on success.
+///
+/// The Tinfoil SDK pins the TLS cert to the SPKI from the attestation
+/// document, so a redeploy that rotates the cert silently breaks every
+/// long-running client that built its `Client` against the previous
+/// measurement. Live incident on 2026-05-11: desktop apps that started
+/// before a v0.3.x bump saw 100 % `Certificate fingerprint mismatch`
+/// failures until restart. 12 h is a compromise between cheap (one
+/// re-attest = ~1-2 s of latency on the first request after expiry)
+/// and frequent enough that a same-day redeploy is recovered before
+/// the user notices anything.
+const CLIENT_REFRESH: Duration = Duration::from_secs(60 * 60 * 12);
 // OPF inference latency on the Tinfoil enclave scales with sequence
 // length: short payloads (~50 chars) come back in ~1 s, but real OCR
 // rows (~2 kB / hundreds of tokens) routinely take 10-15 s. The
@@ -114,6 +126,19 @@ struct FilterResponse {
     redacted: String,
 }
 
+/// What we cache from a successful attestation handshake. We hold on
+/// to the [`tinfoil::Client`] so the SDK's internal verifier state
+/// stays alive for the lifetime of the cached reqwest client (the
+/// attested cert pinning lives there), but expose the bare
+/// [`reqwest::Client`] for actual request dispatch.
+struct CachedClient {
+    /// Keeps the SDK verifier alive for `http`'s lifetime.
+    #[allow(dead_code)]
+    inner: tinfoil::Client,
+    http: reqwest::Client,
+    created_at: Instant,
+}
+
 pub struct TinfoilRedactor {
     enclave: String,
     repo: String,
@@ -122,8 +147,10 @@ pub struct TinfoilRedactor {
     /// the OpenAI chat path), so we keep the header logic local.
     bearer: Option<HeaderValue>,
     timeout: Duration,
-    /// Lazy-init: attestation handshake only runs on first request.
-    client: OnceCell<tinfoil::Client>,
+    /// Cached attested client. RwLock so reads (the hot path) don't
+    /// serialize, write lock only on (re-)attest. Lazy: the first
+    /// `http()` call pays the ~1-2 s attestation handshake.
+    client: RwLock<Option<CachedClient>>,
     /// Reflects whether a Bearer was successfully parsed at construction.
     has_auth: bool,
 }
@@ -175,7 +202,7 @@ impl TinfoilRedactor {
             repo,
             bearer,
             timeout: cfg.timeout.unwrap_or(DEFAULT_TIMEOUT),
-            client: OnceCell::new(),
+            client: RwLock::new(None),
             has_auth,
         }
     }
@@ -190,34 +217,90 @@ impl TinfoilRedactor {
         self.has_auth
     }
 
-    /// Verify the enclave (once) and return its attested reqwest client.
+    /// Verify the enclave and return its attested reqwest client.
+    ///
     /// The Tinfoil SDK does AMD SEV-SNP attestation, Sigstore signature
-    /// check, measurement comparison, and TLS cert pinning all inside
-    /// `Client::new`; we cache the result so subsequent calls reuse the
-    /// verified connection pool.
-    async fn http(&self) -> Result<&reqwest::Client, RedactError> {
-        let client = self
-            .client
-            .get_or_try_init(|| async {
-                // The api_key passed here only flows through the SDK's
-                // async-openai chat path (which we don't use). For our
-                // direct `/filter` POST we attach the Bearer header
-                // ourselves via `self.bearer` below — pass empty here
-                // to keep this constructor purely about transport.
-                tinfoil::Client::new(&self.enclave, &self.repo, "")
-                    .await
-                    .map_err(|e| {
-                        RedactError::Runtime(format!(
-                            "tinfoil attestation failed for {}: {}",
-                            self.enclave, e
-                        ))
-                    })
-            })
-            .await?;
-        client
+    /// check, measurement comparison, and TLS cert pinning inside
+    /// `Client::new`. We cache the result so subsequent calls reuse the
+    /// verified connection pool, AND we expire that cache after
+    /// [`CLIENT_REFRESH`] so a transparent enclave redeploy (which
+    /// rotates the cert) gets picked up automatically. Errors mid-
+    /// flight that look like cert/attestation drift also evict (see
+    /// [`invalidate`] and the call site in [`redact_one`]).
+    async fn http(&self) -> Result<reqwest::Client, RedactError> {
+        // Fast path: read lock, return clone if cached and fresh.
+        if let Some(c) = self.client.read().await.as_ref() {
+            if c.created_at.elapsed() < CLIENT_REFRESH {
+                return Ok(c.http.clone());
+            }
+        }
+        // Slow path: write lock, double-check (another task may have
+        // just rebuilt while we were waiting), then attest.
+        let mut g = self.client.write().await;
+        if let Some(c) = g.as_ref() {
+            if c.created_at.elapsed() < CLIENT_REFRESH {
+                return Ok(c.http.clone());
+            }
+        }
+        // The api_key passed here only flows through the SDK's
+        // async-openai chat path (which we don't use). For our direct
+        // `/filter` POST we attach the Bearer header ourselves via
+        // `self.bearer` below — pass empty here to keep this
+        // constructor purely about transport.
+        let inner = tinfoil::Client::new(&self.enclave, &self.repo, "")
+            .await
+            .map_err(|e| {
+                RedactError::Runtime(format!(
+                    "tinfoil attestation failed for {}: {}",
+                    self.enclave, e
+                ))
+            })?;
+        // `http_client()` returns `&reqwest::Client` borrowed from the
+        // SDK Client — we clone (cheap: reqwest::Client is Arc-shaped)
+        // so the cached struct owns its copy and we can hand more
+        // clones to call sites without borrowing through the RwLock.
+        let http = inner
             .http_client()
-            .map_err(|e| RedactError::Runtime(format!("tinfoil http_client: {}", e)))
+            .map_err(|e| RedactError::Runtime(format!("tinfoil http_client: {}", e)))?
+            .clone();
+        let http_clone = http.clone();
+        *g = Some(CachedClient {
+            inner,
+            http,
+            created_at: Instant::now(),
+        });
+        Ok(http_clone)
     }
+
+    /// Drop the cached attested client so the next call re-attests.
+    /// Used reactively when a request errors with what looks like
+    /// cert-rotation drift — see [`looks_like_attestation_drift`].
+    async fn invalidate(&self) {
+        *self.client.write().await = None;
+    }
+}
+
+/// Heuristic: does this reqwest error look like the kind of attestation
+/// / cert drift that a redeploy would cause? If yes, the cached client
+/// is stale and we should re-attest.
+///
+/// We walk the error chain and match on substrings rather than
+/// downcasting because the Tinfoil-pinned error type isn't stable
+/// across SDK versions. The strings come from rustls + the tinfoil
+/// SDK's verifier and are stable enough for this purpose. Worst case
+/// of a false positive is one extra attestation handshake (~1-2 s).
+pub(crate) fn looks_like_attestation_drift(e: &reqwest::Error) -> bool {
+    let mut s = e.to_string();
+    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(e);
+    while let Some(x) = src {
+        s.push('\n');
+        s.push_str(&x.to_string());
+        src = x.source();
+    }
+    s.contains("Certificate fingerprint mismatch")
+        || s.contains("tls handshake eof")
+        || s.contains("peer closed connection without sending TLS close_notify")
+        || s.contains("invalid peer certificate")
 }
 
 /// Tinfoil's `Client::new` takes a host (no scheme, no path). For
@@ -274,7 +357,26 @@ impl TinfoilRedactor {
         if let Some(b) = &self.bearer {
             req = req.header(AUTHORIZATION, b.clone());
         }
-        let resp = req.send().await?;
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                // If this looks like the enclave's cert rotated under
+                // us (a redeploy), evict the cached attested client so
+                // the next call re-attests against the new measurement.
+                // The reconciliation worker handles the retry — we just
+                // need to make sure the next attempt isn't stuck on the
+                // stale fingerprint.
+                if looks_like_attestation_drift(&e) {
+                    tracing::warn!(
+                        error = %e,
+                        "tinfoil: attestation drift detected — invalidating cached client; \
+                         next request will re-attest"
+                    );
+                    self.invalidate().await;
+                }
+                return Err(e.into());
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
