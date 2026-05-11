@@ -23,13 +23,13 @@ const W: i32 = 24;
 
 /// Diagnostic outputs for [`deformable_attn_single_scale_debug`].
 pub struct DefAttnDebug {
-    pub v_nchw: Array,    // (B*M, D, H, W)
-    pub grids: Array,     // (B*M, Lq, P, 2)
-    pub sampled: Array,   // (B*M, D, Lq, P)
-    pub aw_mul: Array,    // (B*M, 1, Lq, P)
-    pub weighted: Array,  // (B*M, D, Lq, P)
-    pub summed: Array,    // (B*M, D, Lq)
-    pub output: Array,    // (B, Lq, M*D)
+    pub v_nchw: Array,   // (B*M, D, H, W)
+    pub grids: Array,    // (B*M, Lq, P, 2)
+    pub sampled: Array,  // (B*M, D, Lq, P)
+    pub aw_mul: Array,   // (B*M, 1, Lq, P)
+    pub weighted: Array, // (B*M, D, Lq, P)
+    pub summed: Array,   // (B*M, D, Lq)
+    pub output: Array,   // (B, Lq, M*D)
 }
 
 /// Same as [`deformable_attn_single_scale`] but exposes every intermediate
@@ -47,7 +47,9 @@ pub fn deformable_attn_single_scale_debug(
     debug_assert_eq!(hw, H * W);
     debug_assert_eq!(c, N_HEADS * HEAD_DIM);
 
-    let v_t = value.transpose_axes(&[0, 2, 1]).map_err(err("v transpose"))?;
+    let v_t = value
+        .transpose_axes(&[0, 2, 1])
+        .map_err(err("v transpose"))?;
     let v_zero = ops::zeros::<f32>(&[b, c, hw]).map_err(err("v zero"))?;
     let v = v_t.add(&v_zero).map_err(err("v materialize"))?;
     let v = v
@@ -64,8 +66,8 @@ pub fn deformable_attn_single_scale_debug(
     let grids_t = grids
         .transpose_axes(&[0, 2, 1, 3, 4])
         .map_err(err("grids perm"))?;
-    let grids_zero = ops::zeros::<f32>(&[b, N_HEADS, lq, N_POINTS, 2])
-        .map_err(err("grids zero"))?;
+    let grids_zero =
+        ops::zeros::<f32>(&[b, N_HEADS, lq, N_POINTS, 2]).map_err(err("grids zero"))?;
     let grids = grids_t.add(&grids_zero).map_err(err("grids materialize"))?;
     let grids = grids
         .reshape(&[b * N_HEADS, lq, N_POINTS, 2])
@@ -97,8 +99,7 @@ pub fn deformable_attn_single_scale_debug(
     let perm = four_d
         .transpose_axes(&[0, 3, 1, 2])
         .map_err(err("final perm"))?;
-    let final_zero = ops::zeros::<f32>(&[b, lq, N_HEADS, HEAD_DIM])
-        .map_err(err("final zero"))?;
+    let final_zero = ops::zeros::<f32>(&[b, lq, N_HEADS, HEAD_DIM]).map_err(err("final zero"))?;
     let materialized = perm.add(&final_zero).map_err(err("final materialize"))?;
     let output = materialized
         .reshape(&[b, lq, N_HEADS * HEAD_DIM])
@@ -144,7 +145,9 @@ pub fn deformable_attn_single_scale(
     // `transpose_axes` returns a strided view and mlx-rs's optimizer
     // folds `multiply(&one)` away. `contiguous` is cheaper than the
     // earlier `add(zeros_of_target_shape)` workaround.
-    let v_t = value.transpose_axes(&[0, 2, 1]).map_err(err("v transpose"))?;
+    let v_t = value
+        .transpose_axes(&[0, 2, 1])
+        .map_err(err("v transpose"))?;
     let v = crate::util::contiguous(&v_t)?;
     let v = v
         .reshape(&[b, N_HEADS, HEAD_DIM, hw])

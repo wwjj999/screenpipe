@@ -47,8 +47,7 @@ fn linear(x: &Array, w_in_out: &Array, b: &Array) -> Result<Array> {
 }
 
 fn linear_no_bias(x: &Array, w_in_out: &Array) -> Result<Array> {
-    ops::matmul(x, w_in_out)
-        .map_err(|e| Error::Inference(format!("matmul: {e}")))
+    ops::matmul(x, w_in_out).map_err(|e| Error::Inference(format!("matmul: {e}")))
 }
 
 /// Per-token Linear + LN that turns the projector output into the
@@ -116,10 +115,10 @@ impl Mlp3 {
 
 /// Sigmoid + center→corner bbox decoding (RF-DETR uses bbox_reparam=True).
 fn sigmoid(x: &Array) -> Result<Array> {
-    let neg = x.negative()
+    let neg = x
+        .negative()
         .map_err(|e| Error::Inference(format!("sigmoid neg: {e}")))?;
-    let exp = ops::exp(&neg)
-        .map_err(|e| Error::Inference(format!("sigmoid exp: {e}")))?;
+    let exp = ops::exp(&neg).map_err(|e| Error::Inference(format!("sigmoid exp: {e}")))?;
     let one_plus_exp = exp
         .add(&Array::from_f32(1.0))
         .map_err(|e| Error::Inference(format!("sigmoid 1+exp: {e}")))?;

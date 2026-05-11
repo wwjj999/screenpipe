@@ -158,17 +158,24 @@ impl RfDetr {
         let bb_outs = self.backbone.as_ref().unwrap().forward(x_nchw)?;
         // Force evaluation so timing reflects actual compute time.
         for o in &bb_outs {
-            o.eval().map_err(|e| Error::Inference(format!("eval bb: {e}")))?;
+            o.eval()
+                .map_err(|e| Error::Inference(format!("eval bb: {e}")))?;
         }
         let t_bb = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = std::time::Instant::now();
         let proj_flat = self.projector.as_ref().unwrap().forward_flat(&bb_outs)?;
-        proj_flat.eval().map_err(|e| Error::Inference(format!("eval proj: {e}")))?;
+        proj_flat
+            .eval()
+            .map_err(|e| Error::Inference(format!("eval proj: {e}")))?;
         let t_proj = t1.elapsed().as_secs_f64() * 1000.0;
         let t2 = std::time::Instant::now();
         let (boxes, logits) = self.decoder.as_ref().unwrap().forward(&proj_flat)?;
-        boxes.eval().map_err(|e| Error::Inference(format!("eval boxes: {e}")))?;
-        logits.eval().map_err(|e| Error::Inference(format!("eval logits: {e}")))?;
+        boxes
+            .eval()
+            .map_err(|e| Error::Inference(format!("eval boxes: {e}")))?;
+        logits
+            .eval()
+            .map_err(|e| Error::Inference(format!("eval logits: {e}")))?;
         let t_dec = t2.elapsed().as_secs_f64() * 1000.0;
         let t_total = t0.elapsed().as_secs_f64() * 1000.0;
         Ok((boxes, logits, [t_bb, t_proj, t_dec, t_total]))
@@ -248,7 +255,11 @@ impl RfDetr {
                 score: best_score,
             });
         }
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(out)
     }
 }
