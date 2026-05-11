@@ -629,6 +629,11 @@ export default {
 					dsn: env.SENTRY_DSN,
 					tracesSampleRate: 0.1,
 					beforeSend: scrubSentryEvent,
+					// release must match the value passed to `sentry-cli sourcemaps
+					// upload --release=<R>` at deploy time, otherwise Sentry can't
+					// symbolicate stack frames and every event shows `index.js:NNN`
+					// instead of the real provider .ts file + line number.
+					release: env.SENTRY_RELEASE,
 				},
 				request: request as any,
 				context: ctx,

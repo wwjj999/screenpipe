@@ -306,23 +306,37 @@ export class VertexMaasProvider implements AIProvider {
 		return messages.map((msg) => ({
 			role: msg.role,
 			content: Array.isArray(msg.content)
-				? msg.content.map((part) => {
-						if (part.type === 'text') return { type: 'text', text: part.text || '' };
-						// OpenAI image_url format passthrough
-						if (part.type === 'image_url' && part.image_url?.url) {
-							return { type: 'image_url', image_url: { url: part.image_url.url } };
-						}
-						// Pi native format: { type: "image", data, mimeType }
-						if (part.type === 'image' && part.data && part.mimeType) {
-							return { type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.data}` } };
-						}
-						// Anthropic base64 format
-						if (part.type === 'image' && part.source?.type === 'base64') {
-							const mt = part.source.media_type || part.source.mediaType || 'image/png';
-							return { type: 'image_url', image_url: { url: `data:${mt};base64,${part.source.data}` } };
-						}
-						return part;
-				  })
+				? msg.content
+						// Vertex MaaS rejects `type: 'thinking'` / `'redacted_thinking'`
+						// content blocks with `400 INVALID_ARGUMENT: Unrecognized 'type'
+						// field in an object element of an array 'content' field`
+						// (SCREENPIPE-AI-PROXY-C). Clients echoing prior assistant
+						// turns can include them; strip before sending. The actual
+						// answer text travels in a sibling `{type:'text'}` block, so
+						// dropping the thinking block doesn't lose the response.
+						// Cast to any: our `MessagePart` union doesn't list these
+						// types (they're Anthropic-specific) but clients send them.
+						.filter((part) => {
+							const t = (part as any)?.type;
+							return t !== 'thinking' && t !== 'redacted_thinking';
+						})
+						.map((part) => {
+							if (part.type === 'text') return { type: 'text', text: part.text || '' };
+							// OpenAI image_url format passthrough
+							if (part.type === 'image_url' && part.image_url?.url) {
+								return { type: 'image_url', image_url: { url: part.image_url.url } };
+							}
+							// Pi native format: { type: "image", data, mimeType }
+							if (part.type === 'image' && part.data && part.mimeType) {
+								return { type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.data}` } };
+							}
+							// Anthropic base64 format
+							if (part.type === 'image' && part.source?.type === 'base64') {
+								const mt = part.source.media_type || part.source.mediaType || 'image/png';
+								return { type: 'image_url', image_url: { url: `data:${mt};base64,${part.source.data}` } };
+							}
+							return part;
+						})
 				: msg.content,
 			...(msg.tool_calls && { tool_calls: msg.tool_calls }),
 			...(msg.tool_call_id && { tool_call_id: msg.tool_call_id }),

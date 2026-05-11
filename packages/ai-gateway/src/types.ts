@@ -146,6 +146,10 @@ export interface Env {
 	DB: D1Database;
 	// Sentry error tracking
 	SENTRY_DSN: string;
+	// Release identifier passed at deploy time so Sentry can resolve uploaded
+	// source maps to a specific build (`bun run deploy` sets this to the git
+	// short SHA via wrangler --var).
+	SENTRY_RELEASE?: string;
 	// Event classifier (self-hosted vLLM)
 	EVENT_CLASSIFIER_URL: string;
 	// Auto-reload settings

@@ -229,12 +229,26 @@ export class AnthropicProvider implements AIProvider {
 		});
 	}
 
+	// Accept both OpenAI-style ({type:'function', function:{name,...}}) and
+	// Anthropic-native ({name, description, input_schema}) tool shapes. Pi
+	// clients started sending the native shape recently; the OpenAI-only
+	// access crashed `Array.map` on undefined `.function` and threw
+	// SCREENPIPE-AI-PROXY-K (`Cannot read properties of undefined (reading
+	// 'name')`). Drop tools that don't have a usable name rather than 500.
 	private formatTools(tools: Tool[]): AnthropicTool[] {
-		return tools.map((tool) => ({
-			name: tool.function.name,
-			description: tool.function.description,
-			input_schema: tool.function.parameters,
-		}));
+		const out: AnthropicTool[] = [];
+		for (const tool of tools || []) {
+			if (!tool) continue;
+			const fn: any = (tool as any).function ?? tool;
+			const name = fn?.name;
+			if (!name) continue;
+			out.push({
+				name,
+				description: fn.description,
+				input_schema: fn.parameters ?? fn.input_schema,
+			});
+		}
+		return out;
 	}
 
 	formatMessages(messages: Message[]): MessageParam[] {

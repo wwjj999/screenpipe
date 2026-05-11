@@ -403,6 +403,46 @@ async fn main() -> anyhow::Result<()> {
                         let s = re_unix.replace_all(s, "~").to_string();
                         re_win.replace_all(&s, "~").to_string()
                     }
+
+                    // Noise filter: drop events whose root cause is a user
+                    // environment problem we can't fix from code. Mirrors the
+                    // Tauri-app filter in apps/screenpipe-app-tauri/src-tauri/
+                    // src/main.rs — the CLI binary was missing the same
+                    // suppression so the events kept flowing in (CLI-49
+                    // alone hit 744 users on stale builds).
+                    static USER_ENV_PATTERNS: std::sync::OnceLock<Vec<regex::Regex>> =
+                        std::sync::OnceLock::new();
+                    let env_patterns = USER_ENV_PATTERNS.get_or_init(|| {
+                        [
+                            // User hasn't granted screen recording permission (CLI-49)
+                            r"Screen recording permission denied",
+                            // Local DB corruption — user dropped/restored part of their db.sqlite
+                            r"no such table: main\.speaker_embeddings",
+                            // Concurrent DB access / user ran CLI while app was running
+                            r"database is locked",
+                            // Broken Homebrew install — external dylib missing
+                            r"Library not loaded.*libx265\.",
+                            // Linux system library missing — distro-local, not our bug
+                            r"Failed to load ayatana-appindicator3 or appindicator3 dynamic library",
+                            // Deepgram DNS / connectivity blips — already logged locally
+                            r"deepgram transcription failed: Cannot resolve audio transcription server",
+                        ]
+                        .into_iter()
+                        .filter_map(|p| regex::Regex::new(p).ok())
+                        .collect()
+                    });
+                    let matches_noise = |text: &str| env_patterns.iter().any(|re| re.is_match(text));
+                    if event.message.as_deref().map(matches_noise).unwrap_or(false) {
+                        return None;
+                    }
+                    for val in event.exception.values.iter() {
+                        if let Some(ref v) = val.value {
+                            if matches_noise(v) {
+                                return None;
+                            }
+                        }
+                    }
+
                     if let Some(ref mut msg) = event.message {
                         *msg = strip_user_paths(msg);
                     }

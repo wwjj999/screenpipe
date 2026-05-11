@@ -64,6 +64,22 @@ export const TRANSIENT_STATUSES = new Set([403, 404, 408, 429, 500, 502, 503, 50
 // usually means an IAM regression we DO want to know about.
 const SENTRY_SKIP_STATUSES = new Set([404, 429, 502, 503, 504, 524]);
 
+// Upstream 400s that are caused by the client sending too much input,
+// not a server bug — re-classify as 413 to the user and skip Sentry.
+// Anthropic: "prompt is too long: N tokens > MAX maximum" (SCREENPIPE-AI-PROXY-D).
+// OpenAI / Gemini variants use slightly different phrasing.
+const USER_INPUT_TOO_LARGE_PATTERNS = [
+  /prompt is too long/i,
+  /maximum context length/i,
+  /context length.*exceeded/i,
+  /request payload size exceeds/i,
+];
+
+export function isUserInputTooLarge(status: number, msg: string): boolean {
+  if (status !== 400 && status !== 413) return false;
+  return USER_INPUT_TOO_LARGE_PATTERNS.some((re) => re.test(msg));
+}
+
 export function isTransient(status: number, msg: string): boolean {
   if (TRANSIENT_STATUSES.has(status)) return true;
   if (status >= 500) return true;
@@ -138,6 +154,17 @@ async function tryModel(
     const transient = isTransient(status, msg);
     error.status = status;
     error.transient = transient;
+
+    // Re-classify "your prompt is too long" as a 413 client error.
+    // Upstream Anthropic returns 400; Sentry was treating it as a server
+    // bug (SCREENPIPE-AI-PROXY-D — 83 users, 194 events) when it's really
+    // the client over-stuffing the context window. Skip Sentry entirely.
+    if (isUserInputTooLarge(status, msg)) {
+      error.status = 413;
+      console.warn(`${ctx}: ${model} rejected oversized prompt (413)`);
+      logModelOutcome(env, { model, outcome: 'error' }).catch(() => {});
+      throw error;
+    }
 
     if (transient) {
       console.warn(`${ctx}: ${model} failed (${status}), cascading`);

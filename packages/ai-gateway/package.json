@@ -3,13 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy": "bash scripts/deploy.sh",
+    "deploy:no-sourcemaps": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260307.1",
+    "@sentry/cli": "^2.50.2",
     "@types/node": "^22.19.15",
     "typescript": "^5.9.3",
     "wrangler": "^3.114.17"
@@ -21,5 +23,8 @@
     "@google/generative-ai": "^0.21.0",
     "@sentry/cloudflare": "^8.55.0",
     "openai": "^4.104.0"
-  }
+  },
+  "trustedDependencies": [
+    "@sentry/cli"
+  ]
 }
