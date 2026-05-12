@@ -431,12 +431,61 @@ function GridDissolveLoader({
   );
 }
 
+// Pulls /search query params out of a curl-style bash command so the chat row
+// can show "Searched ChatGPT 'foo'" instead of the raw curl URL. Pi's pipes
+// emit these as plain bash tool calls (no MCP), with the app name encoded as
+// app_name=X in the query string — see crates/screenpipe-core/assets/pipes/.
+interface SearchInfo {
+  appName?: string;
+  windowName?: string;
+  query?: string;
+  contentType?: string;
+}
+function parseSearchCommand(cmd: string): SearchInfo | null {
+  if (!cmd) return null;
+  const m = cmd.match(/https?:\/\/[^\s'"`]+\/search\?[^\s'"`]+/);
+  if (!m) return null;
+  try {
+    const url = new URL(m[0]);
+    if (!url.pathname.endsWith("/search")) return null;
+    const sp = url.searchParams;
+    const out: SearchInfo = {
+      appName: sp.get("app_name") || undefined,
+      windowName: sp.get("window_name") || undefined,
+      query: sp.get("q") || undefined,
+      contentType: sp.get("content_type") || undefined,
+    };
+    if (!out.appName && !out.windowName && !out.query && !out.contentType) return null;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function extractAppFromToolCall(toolCall: ToolCall): string | undefined {
+  if (toolCall.toolName === "bash") {
+    const search = parseSearchCommand(String(toolCall.args?.command ?? ""));
+    return search?.appName || search?.windowName;
+  }
+  return undefined;
+}
+
 // Human-friendly label for a tool call (no JSON, no raw paths)
 function friendlyToolLabel(toolCall: ToolCall): string {
   const fileName = (p: string) => p.split("/").pop() || p;
   switch (toolCall.toolName) {
-    case "bash":
-      return `Ran ${toolCall.args.command ? `\`${String(toolCall.args.command).slice(0, 60)}${String(toolCall.args.command).length > 60 ? "…" : ""}\`` : "command"}`;
+    case "bash": {
+      const cmd = String(toolCall.args.command ?? "");
+      const search = parseSearchCommand(cmd);
+      if (search) {
+        const target = search.appName || search.windowName || search.contentType || "recordings";
+        const q = search.query
+          ? ` "${search.query.length > 40 ? search.query.slice(0, 40) + "…" : search.query}"`
+          : "";
+        return `Searched ${target}${q}`;
+      }
+      return `Ran ${cmd ? `\`${cmd.slice(0, 60)}${cmd.length > 60 ? "…" : ""}\`` : "command"}`;
+    }
     case "read":
       return `Read ${fileName(toolCall.args.path || "")}`;
     case "edit":
@@ -494,6 +543,7 @@ function FriendlyToolDetails({ toolCall }: { toolCall: ToolCall }) {
 function ToolCallRailItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const label = friendlyToolLabel(toolCall);
+  const appName = extractAppFromToolCall(toolCall);
 
   return (
     <div className="relative flex min-w-0">
@@ -533,6 +583,9 @@ function ToolCallRailItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: bo
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center gap-1.5 text-left min-w-0 group py-0.5"
         >
+          {appName && (
+            <AppIcon name={appName} sizeClass="w-3.5 h-3.5" letterClass="text-[8px]" />
+          )}
           <span className="truncate flex-1 text-xs font-mono text-foreground/70 group-hover:text-foreground transition-colors duration-150">
             {label}
           </span>
@@ -629,15 +682,65 @@ function formatMinutes(minutes: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function AppIcon({ name }: { name: string }) {
+// Static fallback for web/SaaS apps the OS won't give us via /app-icon. Keys
+// are normalized (trim + lowercase, .app/.exe stripped). Paths point at the
+// existing assets in apps/screenpipe-app-tauri/public/images/.
+const STATIC_APP_ICONS: Record<string, string> = {
+  chatgpt: "/images/openai.png",
+  openai: "/images/openai.png",
+  claude: "/images/claude-ai.svg",
+  "claude.ai": "/images/claude-ai.svg",
+  anthropic: "/images/anthropic.png",
+  perplexity: "/images/perplexity.svg",
+  ollama: "/images/ollama.png",
+  "lm studio": "/images/lmstudio.png",
+  lmstudio: "/images/lmstudio.png",
+  msty: "/images/msty.webp",
+  anythingllm: "/images/anythingllm.png",
+  safari: "/images/safari.svg",
+  notion: "/images/notion.svg",
+  github: "/images/github.png",
+  copilot: "/images/github.png",
+  "github copilot": "/images/github.png",
+  linear: "/images/linear.svg",
+  asana: "/images/asana.svg",
+  jira: "/images/jira.png",
+  hubspot: "/images/hubspot.png",
+  monday: "/images/monday.png",
+  "google calendar": "/images/google-calendar.svg",
+  "google docs": "/images/google-docs.svg",
+  "google sheets": "/images/google-sheets.svg",
+  whatsapp: "/images/whatsapp.svg",
+  resend: "/images/resend.svg",
+  limitless: "/images/limitless.svg",
+  granola: "/images/granola.png",
+  fireflies: "/images/fireflies.png",
+  otter: "/images/otter.png",
+  bee: "/images/bee.png",
+  airtable: "/images/airtable.png",
+  apple: "/images/apple.svg",
+  "apple intelligence": "/images/apple-intelligence.png",
+  screenpipe: "/images/screenpipe.png",
+};
+
+function normalizeAppKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\.app$|\.exe$/i, "");
+}
+
+function AppIcon({
+  name,
+  sizeClass = "w-5 h-5",
+  letterClass = "text-[10px]",
+}: { name: string; sizeClass?: string; letterClass?: string }) {
   const color = nameToColor(name);
   const [iconFailed, setIconFailed] = React.useState(false);
-  const iconUrl = `http://localhost:11435/app-icon?name=${encodeURIComponent(name)}`;
+  const staticPath = STATIC_APP_ICONS[normalizeAppKey(name)];
+  const iconUrl = staticPath ?? `http://localhost:11435/app-icon?name=${encodeURIComponent(name)}`;
   return (
-    <div className="w-5 h-5 rounded-sm flex-shrink-0 flex items-center justify-center overflow-hidden">
+    <div className={cn("rounded-sm flex-shrink-0 flex items-center justify-center overflow-hidden", sizeClass)}>
       {iconFailed ? (
         <span
-          className="w-full h-full flex items-center justify-center text-[10px] font-semibold text-white rounded-sm"
+          className={cn("w-full h-full flex items-center justify-center font-semibold text-white rounded-sm", letterClass)}
           style={{ backgroundColor: color }}
         >
           {name.charAt(0).toUpperCase()}
