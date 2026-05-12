@@ -259,6 +259,26 @@ const CURATED_MODELS: ModelEntry[] = [
     cost_tier: 'low',
     recommended_for: ['chat', 'analysis'],
   },
+  // ── Confidential inference (screenpipe's own Tinfoil enclave) ──
+  // Runs in our screenpipe/privacy-filter container at
+  // pii.screenpipe.containers.tinfoil.dev, attested end-to-end via Sigstore
+  // + AMD SEV-SNP. The only Gemma 4 variant with native audio understanding
+  // (E2B/E4B only — the 31B doesn't support audio at all).
+  {
+    id: 'gemma4-e4b',
+    object: 'model',
+    owned_by: 'screenpipe',
+    name: 'Gemma 4 E4B (Confidential, Audio)',
+    description: 'confidential audio + vision + chat — your screenpipe data analyzed inside an attested enclave.',
+    tags: ['confidential', 'private', 'encrypted', 'audio', 'vision'],
+    free: false,
+    context_window: 128000,
+    best_for: ['audio', 'vision', 'private queries', 'sensitive data'],
+    speed: 'fast',
+    intelligence: 'standard',
+    cost_tier: 'low',
+    recommended_for: ['chat', 'analysis'],
+  },
   // ── Included with screenpipe ──
   {
     id: 'claude-opus-4-7',

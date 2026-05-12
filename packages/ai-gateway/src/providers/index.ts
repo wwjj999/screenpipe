@@ -5,6 +5,7 @@ import { GeminiProvider } from './gemini';
 import { OpenRouterProvider } from './openrouter';
 import { VertexMaasProvider, isVertexMaasModel } from './vertex-maas';
 import { TinfoilProvider, isTinfoilModel } from './tinfoil';
+import { ScreenpipeEnclaveProvider, isScreenpipeEnclaveModel } from './screenpipe-enclave';
 import { AIProvider } from './base';
 import { Env } from '../types';
 
@@ -83,6 +84,14 @@ export function createProvider(model: string, env: Env): AIProvider {
 			throw new Error('Tinfoil API key not configured');
 		}
 		return new TinfoilProvider(env.TINFOIL_API_KEY);
+	}
+	// Screenpipe enclave — our own Tinfoil-hosted CVM serving Gemma 4 E4B
+	// (audio + vision + chat) alongside the privacy-filter.
+	if (isScreenpipeEnclaveModel(model)) {
+		if (!env.SCREENPIPE_ENCLAVE_API_KEY) {
+			throw new Error('Screenpipe enclave API key not configured');
+		}
+		return new ScreenpipeEnclaveProvider(env.SCREENPIPE_ENCLAVE_API_KEY);
 	}
 	if (isOpenRouterModel(model)) {
 		if (!env.OPENROUTER_API_KEY) {
