@@ -242,7 +242,13 @@ impl AudioStream {
                 is_disconnected.clone(),
                 stream_control_tx.clone(),
             );
-            let stream = match build_input_stream(&device, &config, channels, tx.clone(), primary_cb) {
+            let stream = match build_input_stream(
+                &device,
+                &config,
+                channels,
+                tx.clone(),
+                primary_cb,
+            ) {
                 Ok(s) => Some(s),
                 Err(primary_err) if is_wasapi_unsupported_format(&primary_err) => {
                     warn!(
@@ -258,7 +264,13 @@ impl AudioStream {
                                 is_disconnected,
                                 stream_control_tx,
                             );
-                            match build_input_stream(&device, &fallback, fb_channels, tx, fallback_cb) {
+                            match build_input_stream(
+                                &device,
+                                &fallback,
+                                fb_channels,
+                                tx,
+                                fallback_cb,
+                            ) {
                                 Ok(s) => Some(s),
                                 Err(fallback_err) => {
                                     error!(
