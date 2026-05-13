@@ -10583,7 +10583,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.4.206"
+version = "2.4.208"
 dependencies = [
  "aes",
  "anyhow",
@@ -10703,7 +10703,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-audio"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "audiopipe",
@@ -10759,7 +10759,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-config"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -10771,7 +10771,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-connect"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10804,7 +10804,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-core"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "accessibility",
  "accessibility-sys",
@@ -10852,7 +10852,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-db"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10877,7 +10877,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-engine"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -10945,7 +10945,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-events"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10961,7 +10961,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-redact"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10988,7 +10988,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-rfdetr-mlx"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "image 0.25.10",
  "mlx-rs",
@@ -10999,7 +10999,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-screen"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "accessibility-sys",
  "anyhow",
@@ -11052,7 +11052,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-vault"
-version = "0.3.333"
+version = "0.3.334"
 dependencies = [
  "argon2",
  "chacha20poly1305",
