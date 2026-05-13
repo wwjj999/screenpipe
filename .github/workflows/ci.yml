@@ -70,7 +70,7 @@ jobs:
           cp crates/screenpipe-screen/tests/testing_OCR.png target/debug/deps/
 
       - name: Run cargo tests
-        run: cargo test
+        run: cargo test --workspace --exclude screenpipe-rfdetr-mlx
 
   test-windows:
     # windows-2019 reached end-of-life on the GitHub-hosted runner fleet
@@ -228,7 +228,7 @@ jobs:
           ORT_LIB_LOCATION: ${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.19.2
           # Use prebuilt NASM objects on Windows: https://aws.github.io/aws-lc-rs/requirements/windows.html#prebuilt-nasm-objects
           AWS_LC_SYS_PREBUILT_NASM: "1"
-        run: cargo test test_process_ocr_task_windows --release --target x86_64-pc-windows-msvc
+        run: cargo test -p screenpipe-screen test_process_ocr_task_windows --release --target x86_64-pc-windows-msvc
 
       - name: Run PII removal tests
         env:

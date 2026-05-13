@@ -1643,7 +1643,9 @@ async fn browser_pair_start(
     if !browser_pair_client_allowed(addr, &headers) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "browser pairing is only available to local browser extensions" })),
+            Json(
+                json!({ "error": "browser pairing is only available to local browser extensions" }),
+            ),
         )
             .into_response();
     }
@@ -1673,7 +1675,9 @@ async fn browser_pair_status(
     if !browser_pair_client_allowed(addr, &headers) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "browser pairing is only available to local browser extensions" })),
+            Json(
+                json!({ "error": "browser pairing is only available to local browser extensions" }),
+            ),
         )
             .into_response();
     }
@@ -1690,7 +1694,11 @@ async fn browser_pair_status(
         );
     }
 
-    (StatusCode::OK, Json(json!({ "status": status, "token": token }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "status": status, "token": token })),
+    )
+        .into_response()
 }
 
 async fn browser_pair_pending(State(state): State<ConnectionsState>) -> Json<Value> {
