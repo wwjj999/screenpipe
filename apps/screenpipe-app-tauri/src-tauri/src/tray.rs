@@ -945,8 +945,15 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                         });
                     });
                 } else {
-                    // For production builds, emit event to trigger update
-                    let _ = app.emit("update-now-clicked", ());
+                    // For production builds, run the authenticated update flow.
+                    tauri::async_runtime::spawn(async move {
+                        let state = app.state::<std::sync::Arc<crate::updates::UpdatesManager>>();
+                        if state.has_update_installed().await {
+                            let _ = app.emit("update-now-clicked", ());
+                        } else if let Err(e) = state.check_for_updates(true).await {
+                            tracing::error!("tray menu: check for updates failed: {}", e);
+                        }
+                    });
                 }
             });
         }

@@ -521,10 +521,16 @@ impl AudioManager {
 
     async fn record_device(&self, device: &AudioDevice) -> Result<JoinHandle<Result<()>>> {
         let options = self.options.read().await;
-        let stream = self.device_manager.stream(device).unwrap();
+        let stream = self
+            .device_manager
+            .stream(device)
+            .ok_or_else(|| anyhow!("audio stream missing after starting device: {device}"))?;
         let audio_chunk_duration = options.audio_chunk_duration;
         let recording_sender = self.recording_sender.clone();
-        let is_running = self.device_manager.is_running_mut(device).unwrap();
+        let is_running = self
+            .device_manager
+            .is_running_mut(device)
+            .ok_or_else(|| anyhow!("audio device state missing after starting device: {device}"))?;
         let device_clone = device.clone();
         let metrics = self.metrics.clone();
 
