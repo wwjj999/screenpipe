@@ -695,7 +695,7 @@ impl ShowRewindWindow {
                             .visible(false)
                             .focused(false)
                             .transparent(false);
-                        builder.build()?
+                        super::finalize_webview_window(builder.build()?)
                     };
 
                     // Windows/Linux: normal window
@@ -744,7 +744,7 @@ impl ShowRewindWindow {
                                     let _ = app_clone.emit("window-focused", true);
                                 }
                             });
-                        builder.build()?
+                        super::finalize_webview_window(builder.build()?)
                     };
 
                     // Convert to NSPanel on macOS (same as overlay) so it
@@ -1008,7 +1008,7 @@ impl ShowRewindWindow {
                         .inner_size(logical_size.width, logical_size.height)
                         .max_inner_size(logical_size.width, logical_size.height)
                         .position(position.0, position.1);
-                    builder.build()?
+                    super::finalize_webview_window(builder.build()?)
                 };
 
                 // Windows uses a fullscreen transparent overlay with Win32 click-through
@@ -1091,7 +1091,7 @@ impl ShowRewindWindow {
                                 let _ = app_clone.emit("window-focused", true);
                             }
                         });
-                    builder.build()?
+                    super::finalize_webview_window(builder.build()?)
                 };
 
                 // Linux uses a normal decorated window (overlay not yet implemented).
@@ -1121,7 +1121,7 @@ impl ShowRewindWindow {
                                 let _ = app_clone.emit("window-focused", true);
                             }
                         });
-                    builder.build()?
+                    super::finalize_webview_window(builder.build()?)
                 };
 
                 #[cfg(target_os = "macos")]
@@ -1361,7 +1361,7 @@ impl ShowRewindWindow {
                             ..Default::default()
                         })
                 };
-                let window = builder.build()?;
+                let window = super::finalize_webview_window(builder.build()?);
 
                 // When Main loses focus to Home, Main's debounce used to unregister Escape
                 // while the overlay stayed visible. Re-register on Home focus; unregister
@@ -1484,7 +1484,7 @@ impl ShowRewindWindow {
                         .focused(true)
                         .resizable(true);
 
-                let window = builder.build()?;
+                let window = super::finalize_webview_window(builder.build()?);
 
                 // Skip NSPanel conversion for search — it causes SIGSEGV crashes
                 // in objc_autoreleasePoolPop on macOS 26. Use raw NSWindow level
@@ -1558,7 +1558,7 @@ impl ShowRewindWindow {
                     .minimizable(false)
                     .maximizable(false)
                     .focused(true);
-                let window = builder.build()?;
+                let window = super::finalize_webview_window(builder.build()?);
 
                 window
             }
@@ -1580,7 +1580,7 @@ impl ShowRewindWindow {
                         .visible(false)
                         .always_on_top(chat_always_on_top)
                         .hidden_title(true);
-                    let window = builder.build()?;
+                    let window = super::finalize_webview_window(builder.build()?);
 
                     // Convert to panel for fullscreen support.
                     // Only configure level + behaviors here — do NOT activate
@@ -1655,7 +1655,7 @@ impl ShowRewindWindow {
                         .min_inner_size(500.0, 600.0)
                         .focused(true)
                         .always_on_top(chat_always_on_top);
-                    builder.build()?
+                    super::finalize_webview_window(builder.build()?)
                 };
 
                 window
@@ -1671,7 +1671,7 @@ impl ShowRewindWindow {
                     .center();
                 #[cfg(target_os = "macos")]
                 let builder = builder.hidden_title(true);
-                let window = builder.build()?;
+                let window = super::finalize_webview_window(builder.build()?);
 
                 // Exclude from screen capture (NSWindowSharingNone = 0)
                 // MUST run on main thread - AppKit window operations crash from background threads
