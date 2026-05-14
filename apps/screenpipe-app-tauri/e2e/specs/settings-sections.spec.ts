@@ -50,8 +50,8 @@ const SETTINGS_SECTIONS = [
 function isSettingsSectionUrl(url: string, id: string): boolean {
   const parsed = new URL(url);
   if (parsed.pathname !== '/settings') return false;
-  if (id === 'display') {
-    return !parsed.searchParams.has('section') || parsed.searchParams.get('section') === 'display';
+  if (id === 'display' || id === 'general') {
+    return !parsed.searchParams.has('section') || parsed.searchParams.get('section') === id;
   }
   return parsed.searchParams.get('section') === id;
 }
