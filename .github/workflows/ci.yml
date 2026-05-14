@@ -21,12 +21,10 @@ on:
       - '.github/scripts/**'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
   # Cancel superseded runs on PR branches (saves minutes when a contributor
-  # rapidly re-pushes), but let main runs always finish — pushes to main
-  # land faster than this workflow's longest job (cargo test on ubuntu, ~30
-  # min), so cancelling-in-progress on main means CI never reports a single
-  # green/red signal for any commit (we hit 30 consecutive cancellations).
+  # rapidly re-pushes). Main pushes use the commit SHA in the group so a
+  # newer merge does not sit pending behind a stale long-running commit.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
