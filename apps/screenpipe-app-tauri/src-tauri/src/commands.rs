@@ -145,8 +145,7 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
                     error!("failed to show window for meeting_join: {}", e);
                 }
             });
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let _ = app_clone.emit("deep-link-received", deeplink_url);
+            emit_meeting_note_route_with_retries(&app_clone, &deeplink_url);
         });
         return;
     }
@@ -191,17 +190,20 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
                 } else {
                     ShowRewindWindow::Main
                 };
-                // Show the target surface first so DeeplinkHandler is mounted,
-                // then emit. Meeting links should not flash Main/timeline before
-                // routing into Home -> Meeting notes.
+                // Show the target surface first. Meeting links should not flash
+                // Main/timeline before routing into Home -> Meeting notes.
                 let app_for_show = app_clone.clone();
                 let _ = app_clone.run_on_main_thread(move || {
                     if let Err(e) = target.show(&app_for_show) {
                         error!("failed to show window for deeplink: {}", e);
                     }
                 });
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                let _ = app_clone.emit("deep-link-received", url);
+                if is_meeting_deeplink(&url) {
+                    emit_meeting_note_route_with_retries(&app_clone, &url);
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let _ = app_clone.emit("deep-link-received", url);
+                }
             } else {
                 // External URL — hand off to the opener plugin.
                 use tauri_plugin_opener::OpenerExt;
@@ -221,6 +223,91 @@ fn native_notif_action_callback_inner(json_ptr: *const std::os::raw::c_char) {
 
 fn is_meeting_deeplink(url: &str) -> bool {
     url.starts_with("screenpipe://meeting/") || url.starts_with("screenpipe://meeting?")
+}
+
+#[cfg(target_os = "macos")]
+fn parse_meeting_deeplink(url: &str) -> Option<(u64, bool)> {
+    if !is_meeting_deeplink(url) {
+        return None;
+    }
+
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    let path_id = base
+        .strip_prefix("screenpipe://meeting/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|id| !id.is_empty());
+    let query_id = query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        (key == "id" && !value.is_empty()).then_some(value)
+    });
+    let meeting_id = path_id.or(query_id)?.parse::<u64>().ok()?;
+    let transcript = query
+        .split('&')
+        .find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            (key == "live").then_some(value != "0")
+        })
+        .unwrap_or(true);
+
+    Some((meeting_id, transcript))
+}
+
+#[cfg(target_os = "macos")]
+fn emit_meeting_note_route_with_retries(app: &tauri::AppHandle, deeplink_url: &str) {
+    let Some((meeting_id, transcript)) = parse_meeting_deeplink(deeplink_url) else {
+        warn!(
+            "invalid meeting deeplink from notification: {}",
+            deeplink_url
+        );
+        return;
+    };
+
+    let payload = serde_json::json!({
+        "meetingId": meeting_id,
+        "transcript": transcript,
+    });
+    let nav = serde_json::json!({ "url": "/home?section=meetings" });
+
+    // A notification click can cold-open the Home webview. React listeners are
+    // not guaranteed to be mounted when `show()` returns, so a single emit is
+    // lossy. Retry briefly; opening the same meeting note is idempotent and this
+    // makes one user click survive window startup, route changes, and slow dev
+    // builds.
+    for delay_ms in [150_u64, 500, 1200, 2200] {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        let _ = app.emit("navigate", nav.clone());
+        let _ = app.emit("open-meeting-note", payload.clone());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::parse_meeting_deeplink;
+
+    #[test]
+    fn parses_meeting_deeplink_path_id() {
+        assert_eq!(
+            parse_meeting_deeplink("screenpipe://meeting/123"),
+            Some((123, true))
+        );
+    }
+
+    #[test]
+    fn parses_meeting_deeplink_query_id_and_live_flag() {
+        assert_eq!(
+            parse_meeting_deeplink("screenpipe://meeting?id=456&live=0"),
+            Some((456, false))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_meeting_deeplink() {
+        assert_eq!(
+            parse_meeting_deeplink("screenpipe://meeting/not-a-number"),
+            None
+        );
+        assert_eq!(parse_meeting_deeplink("screenpipe://settings"), None);
+    }
 }
 
 /// Callback invoked from Swift when user clicks a shortcut reminder action.
@@ -405,7 +492,10 @@ pub async fn set_api_auth_key(app_handle: tauri::AppHandle, key: String) -> Resu
     persist_api_auth_key_to_settings(&app_handle, &key)
 }
 
-fn persist_api_auth_key_to_settings(app_handle: &tauri::AppHandle, key: &str) -> Result<(), String> {
+fn persist_api_auth_key_to_settings(
+    app_handle: &tauri::AppHandle,
+    key: &str,
+) -> Result<(), String> {
     let mut store = SettingsStore::get(app_handle)?.unwrap_or_default();
     store.recording.api_key = key.to_string();
     store.save(app_handle)?;
