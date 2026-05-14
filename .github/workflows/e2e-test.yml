@@ -22,7 +22,7 @@ concurrency:
 jobs:
   windows-e2e-test:
     name: Windows E2E Tests
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
     - uses: actions/checkout@v4
 
