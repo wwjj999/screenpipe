@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { useSettings, ChatMessage, ChatConversation } from "@/lib/hooks/use-settings";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck, Sparkles, Plug } from "lucide-react";
+import { Loader2, Send, Square, User, Settings, ExternalLink, X, ImageIcon, History, Search, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Plus, Copy, Check, Clock, Paperclip, Filter, RefreshCw, GitBranch, MoreHorizontal, Pencil, Pin, Shield, ShieldCheck, Sparkles, Plug, CornerDownRight } from "lucide-react";
 import { SchedulePromptDialog } from "@/components/chat/schedule-prompt-dialog";
 import { PipeContextBanner } from "@/components/chat/pipe-context-banner";
 import { BrowserSidebar } from "@/components/browser-sidebar";
@@ -64,6 +64,14 @@ import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
 import { localFetch, getApiBaseUrl } from "@/lib/api";
 import { getFaviconUrl } from "@/components/rewind/timeline/favicon-utils";
+import {
+  formatSteerShortcut,
+  isComposerSteerShortcut,
+  isQueuedItemCancelShortcut,
+  isQueuedItemSteerShortcut,
+  normalizeQueueEventPayload,
+  queuedPreviewMatchesText,
+} from "@/lib/chat-queue-controls";
 // Session ID is per-conversation — set on mount (new conv) and updated on load/new.
 // Stored as a ref so event listeners always see the current value without stale closures.
 
@@ -1895,6 +1903,7 @@ export function StandaloneChat({
   // truth lives in `pi_command_queue.rs`. Cleared as soon as the drain loop
   // pulls a queued item and writes it to stdin (it's then in-flight).
   const [queuedPrompts, setQueuedPrompts] = useState<PiQueuedPrompt[]>([]);
+  const [queuedActionPromptId, setQueuedActionPromptId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
   // Cursor-style inline edit: click a sent user message to tweak and resend
@@ -2979,6 +2988,14 @@ export function StandaloneChat({
 
     // Ignore Enter while an IME composition is active so confirmation does not submit the message.
     if (isComposing || nativeIsComposing) {
+      return;
+    }
+
+    if (isComposerSteerShortcut(e) && !showMentionDropdown) {
+      e.preventDefault();
+      if (input.trim() || pastedImages.length > 0) {
+        steerMessage(input.trim());
+      }
       return;
     }
 
@@ -4099,10 +4116,11 @@ export function StandaloneChat({
     // session this panel is bound to. Single source of truth lives in
     // `pi_command_queue.rs`; this listener just mirrors it into local state.
     let unlistenQueue: UnlistenFn | undefined;
-    listen<{ sessionId: string; queued: PiQueuedPrompt[] }>("pi-queue-changed", (event) => {
+    listen<{ sessionId?: string; session_id?: string; queued?: PiQueuedPrompt[] }>("pi-queue-changed", (event) => {
       if (!mounted) return;
-      if (event.payload.sessionId !== piSessionIdRef.current) return;
-      setQueuedPrompts(event.payload.queued ?? []);
+      const { sessionId, queued } = normalizeQueueEventPayload(event.payload);
+      if (sessionId !== piSessionIdRef.current) return;
+      setQueuedPrompts(queued);
     }).then(fn => { unlistenQueue = fn; });
 
     // Initial fetch — closes the gap between component mount and first event.
@@ -4421,7 +4439,11 @@ export function StandaloneChat({
       timestamp: Date.now(),
       queued: true,
     };
-    setMessages((prev) => [...prev, newUserMessage]);
+    setMessages((prev) => {
+      const next = [...prev, newUserMessage];
+      void saveConversation(next);
+      return next;
+    });
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
@@ -4444,10 +4466,6 @@ export function StandaloneChat({
       storeState.actions.appendMessage(sidNow, newUserMessage as any);
       storeState.actions.patch(sidNow, { lastUserMessageAt: Date.now() });
     }
-
-    // Persist immediately — covers the edge case where Pi crashes between
-    // enqueue and dequeue, leaving the user's message stranded otherwise.
-    void saveConversation([...messages, newUserMessage]);
 
     posthog.capture("chat_message_enqueued", {
       provider: activePreset?.provider,
@@ -4480,7 +4498,7 @@ export function StandaloneChat({
     }
   }
 
-  async function sendPiMessage(userMessage: string, displayLabel?: string) {
+  async function sendPiMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
     // Auto-start Pi if it's not running yet (new session or crash recovery)
     if (!piInfo?.running) {
       if (piStartInFlightRef.current) {
@@ -4547,12 +4565,15 @@ export function StandaloneChat({
       setIsStreaming(false);
     }
 
+    const outgoingImages = imageDataUrls ?? pastedImages;
+    const shouldClearPastedImages = imageDataUrls == null && pastedImages.length > 0;
+
     const newUserMessage: Message = {
       id: Date.now().toString(),
       role: "user",
       content: userMessage,
       ...(displayLabel ? { displayContent: displayLabel } : {}),
-      ...(pastedImages.length > 0 ? { images: [...pastedImages] } : {}),
+      ...(outgoingImages.length > 0 ? { images: [...outgoingImages] } : {}),
       timestamp: Date.now(),
     };
 
@@ -4572,7 +4593,11 @@ export function StandaloneChat({
     }
     lastUserMessageRef.current = userMessage;
 
-    setMessages((prev) => [...prev, newUserMessage]);
+    setMessages((prev) => {
+      const next = [...prev, newUserMessage];
+      void saveConversation(next);
+      return next;
+    });
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     setIsLoading(true);
@@ -4628,20 +4653,10 @@ export function StandaloneChat({
       storeState.actions.patch(sidNow, { lastUserMessageAt: Date.now() });
     }
 
-    // Persist user message to disk immediately so it survives a
-    // navigate-away-mid-stream or a Pi crash before agent_end. The
-    // existing save-on-isLoading-transition only fires when the stream
-    // completes cleanly — if anything kills the turn before then, the
-    // user's message would otherwise live only in the in-memory store
-    // and vanish on the next cold reload. Fire-and-forget: the next
-    // save (on agent_end) will overwrite the same file with the full
-    // conversation including the assistant reply.
-    void saveConversation([...messages, newUserMessage]);
-
     posthog.capture("chat_message_sent", {
       provider: activePreset?.provider,
       model: activePreset?.model,
-      has_images: pastedImages.length > 0 || !!prefillFrameId,
+      has_images: outgoingImages.length > 0 || !!prefillFrameId,
       has_context: !!prefillContext,
       message_index: messages.filter((m) => m.role === "user").length,
     });
@@ -4685,7 +4700,7 @@ export function StandaloneChat({
         setPrefillContext(null);
       }
 
-      for (const img of pastedImages) {
+      for (const img of outgoingImages) {
         const match = img.match(/^data:(image\/[^;]+);base64,(.+)$/);
         if (match) {
           piImages.push({
@@ -4695,7 +4710,7 @@ export function StandaloneChat({
           });
         }
       }
-      if (pastedImages.length > 0) setPastedImages([]);
+      if (shouldClearPastedImages) setPastedImages([]);
 
       setMessages((prev) => [
         ...prev,
@@ -4918,6 +4933,145 @@ export function StandaloneChat({
 
     // All providers route through Pi agent
     return sendPiMessage(userMessage, displayLabel);
+  }
+
+  function findLocalQueuedMessage(prompt: PiQueuedPrompt): Message | undefined {
+    return messages.find(
+      (message) =>
+        message.role === "user" &&
+        message.queued &&
+        queuedPreviewMatchesText(prompt.preview, message.content),
+    );
+  }
+
+  function removeLocalQueuedMessage(prompt: PiQueuedPrompt) {
+    const matchesPrompt = (message: unknown) => {
+      if (!message || typeof message !== "object") return false;
+      const candidate = message as { role?: unknown; queued?: unknown; content?: unknown };
+      return (
+        candidate.role === "user" &&
+        candidate.queued === true &&
+        typeof candidate.content === "string" &&
+        queuedPreviewMatchesText(prompt.preview, candidate.content)
+      );
+    };
+
+    setMessages((prev) => {
+      let removed = false;
+      const next = prev.filter((message) => {
+        if (!removed && matchesPrompt(message)) {
+          removed = true;
+          return false;
+        }
+        return true;
+      });
+      if (!removed) return prev;
+      void saveConversation(next);
+      return next;
+    });
+
+    const sid = piSessionIdRef.current;
+    if (!sid) return;
+    const storeState = useChatStore.getState();
+    const sessionMessages = storeState.sessions[sid]?.messages;
+    if (!sessionMessages?.length) return;
+
+    let removed = false;
+    const nextMessages = sessionMessages.filter((message) => {
+      if (!removed && matchesPrompt(message)) {
+        removed = true;
+        return false;
+      }
+      return true;
+    });
+    if (removed) {
+      storeState.actions.setMessages(sid, nextMessages);
+    }
+  }
+
+  async function cancelQueuedPrompt(prompt: PiQueuedPrompt, options: { silent?: boolean } = {}) {
+    setQueuedActionPromptId(prompt.id);
+    try {
+      const result = await commands.piCancelQueued(piSessionIdRef.current, prompt.id);
+      if (result.status !== "ok") {
+        if (!options.silent) {
+          toast({ title: "failed to cancel queued message", description: result.error, variant: "destructive" });
+        }
+        return false;
+      }
+      if (!result.data) {
+        if (!options.silent) {
+          toast({
+            title: "message already started",
+            description: "Use stop if you want to interrupt the active reply.",
+          });
+        }
+        return false;
+      }
+      setQueuedPrompts((prev) => prev.filter((queued) => queued.id !== prompt.id));
+      removeLocalQueuedMessage(prompt);
+      return true;
+    } catch (e) {
+      if (!options.silent) {
+        toast({
+          title: "failed to cancel queued message",
+          description: e instanceof Error ? e.message : String(e),
+          variant: "destructive",
+        });
+      }
+      return false;
+    } finally {
+      setQueuedActionPromptId((current) => current === prompt.id ? null : current);
+    }
+  }
+
+  async function steerMessage(userMessage: string, displayLabel?: string, imageDataUrls?: string[]) {
+    const hasImages = imageDataUrls ? imageDataUrls.length > 0 : pastedImages.length > 0;
+    const trimmed = userMessage.trim();
+    if (!trimmed && !hasImages) return;
+
+    const hadActiveReply = isLoading || isStreaming || !!piMessageIdRef.current;
+    posthog.capture("chat_message_steered", {
+      provider: activePreset?.provider,
+      model: activePreset?.model,
+      had_active_reply: hadActiveReply,
+      from_queue: !!imageDataUrls,
+    });
+
+    if (hadActiveReply) {
+      toast({
+        title: "steering current reply",
+        description: "Stopping the current reply and running this now.",
+      });
+    }
+
+    return sendPiMessage(trimmed, displayLabel, imageDataUrls);
+  }
+
+  async function steerQueuedPrompt(prompt: PiQueuedPrompt) {
+    const queuedMessage = findLocalQueuedMessage(prompt);
+    if (!queuedMessage && (!prompt.preview || prompt.preview.length >= 200)) {
+      toast({
+        title: "full queued prompt unavailable",
+        description: "Cancel it or let it run next; ScreenPipe only has a preview for this item.",
+      });
+      return;
+    }
+
+    const cancelled = await cancelQueuedPrompt(prompt, { silent: true });
+    if (!cancelled) {
+      toast({
+        title: "message already started",
+        description: "That follow-up has moved out of the queue.",
+      });
+      return;
+    }
+
+    await steerMessage(
+      queuedMessage?.content ?? prompt.preview,
+      queuedMessage?.displayContent,
+      queuedMessage?.images ?? [],
+    );
   }
 
   // Keep ref in sync so useEffect callbacks can call sendMessage
@@ -5593,61 +5747,6 @@ export function StandaloneChat({
           })()}
         </AnimatePresence>
 
-        {/* Queued follow-ups — rendered between the streaming message and the
-            scroll anchor so they sit visually in the "what's next" gap. The
-            list comes from rust via `pi-queue-changed`; entries disappear as
-            the drain loop pulls each prompt and starts streaming it. */}
-        <AnimatePresence>
-          {queuedPrompts.length > 0 && (
-            <motion.div
-              key="queued-rail"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.2 }}
-              className="px-4 py-2 space-y-1.5"
-            >
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60 px-1">
-                queued · waiting for current reply
-              </div>
-              {queuedPrompts.map((p, i) => (
-                <motion.div
-                  key={p.id}
-                  layout
-                  initial={{ opacity: 0, x: -6 }}
-                  animate={{ opacity: 0.55, x: 0 }}
-                  exit={{ opacity: 0, x: 6, scale: 0.96 }}
-                  transition={{ duration: 0.18 }}
-                  whileHover={{ opacity: 0.85 }}
-                  className="group/qcard flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-border/40 bg-transparent text-sm text-muted-foreground/80 hover:border-border hover:bg-muted/30 transition-colors"
-                  title={p.preview.length > 80 ? p.preview : undefined}
-                >
-                  <span className="font-mono text-[10px] text-muted-foreground/50 shrink-0 w-4 text-right">
-                    {i + 1}
-                  </span>
-                  <Clock className="h-3 w-3 flex-shrink-0 opacity-50" />
-                  <span className="truncate flex-1">{p.preview}</span>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await commands.piCancelQueued(piSessionIdRef.current, p.id);
-                      } catch (e) {
-                        console.warn("[Pi] cancel queued failed:", e);
-                      }
-                    }}
-                    className="opacity-0 group-hover/qcard:opacity-100 transition-opacity p-0.5 hover:bg-muted rounded shrink-0"
-                    aria-label="cancel queued message"
-                    title="cancel"
-                  >
-                    <X className="h-3 w-3 text-muted-foreground" />
-                  </button>
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         <div ref={messagesEndRef} />
       </div> {/* End of max-w-4xl wrapper */}
 
@@ -6132,6 +6231,104 @@ export function StandaloneChat({
               )}
             </AnimatePresence>
           )}
+
+          <AnimatePresence>
+            {queuedPrompts.length > 0 && (
+              <motion.div
+                key="composer-queued-rail"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.18 }}
+                className="mb-2 rounded-lg border border-border/60 bg-background/95 shadow-sm overflow-hidden"
+              >
+                <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border/50">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Clock className="h-3 w-3 text-muted-foreground/70 shrink-0" />
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                      queued
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-muted-foreground/60">
+                    {queuedPrompts.length}
+                  </span>
+                </div>
+                <TooltipProvider delayDuration={150}>
+                  <div className="max-h-[156px] overflow-y-auto scrollbar-minimal">
+                    {queuedPrompts.map((p, i) => {
+                      const isBusy = queuedActionPromptId === p.id;
+                      const label = p.preview || "image follow-up";
+                      return (
+                        <motion.div
+                          key={p.id}
+                          layout
+                          initial={{ opacity: 0, y: 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, x: 8, scale: 0.98 }}
+                          transition={{ duration: 0.16 }}
+                          tabIndex={0}
+                          role="listitem"
+                          onKeyDown={(e) => {
+                            if (isBusy) return;
+                            if (isQueuedItemSteerShortcut(e)) {
+                              e.preventDefault();
+                              steerQueuedPrompt(p);
+                            } else if (isQueuedItemCancelShortcut(e)) {
+                              e.preventDefault();
+                              cancelQueuedPrompt(p);
+                            }
+                          }}
+                          className="group/qcard flex items-center gap-2 px-3 py-2 border-b border-border/40 last:border-b-0 text-sm text-muted-foreground/90 focus-visible:outline-none focus-visible:bg-muted/40 hover:bg-muted/30 transition-colors"
+                          title={label.length > 90 ? label : undefined}
+                        >
+                          <span className="font-mono text-[10px] text-muted-foreground/50 shrink-0 w-4 text-right">
+                            {i + 1}
+                          </span>
+                          <span className="truncate flex-1 min-w-0">{label}</span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => steerQueuedPrompt(p)}
+                                className="h-7 px-2 rounded-md inline-flex items-center gap-1 text-xs text-foreground bg-muted/70 hover:bg-muted disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                                aria-label={`steer queued message ${i + 1}`}
+                              >
+                                {isBusy ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <CornerDownRight className="h-3 w-3" />
+                                )}
+                                <span>Steer</span>
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              Stop current reply and run this now ({formatSteerShortcut(isMac)})
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => cancelQueuedPrompt(p)}
+                                className="h-7 w-7 rounded-md inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                                aria-label={`remove queued message ${i + 1}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">Remove queued message</TooltipContent>
+                          </Tooltip>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </TooltipProvider>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <div
             className={cn(
               "flex flex-col rounded-lg border bg-input ring-offset-background transition-colors focus-within:border-foreground focus-within:ring-foreground/10 focus-within:ring-1",
@@ -6152,7 +6349,7 @@ export function StandaloneChat({
                   disabledReason
                     ? disabledReason
                     : isLoading || isStreaming
-                      ? "type to queue next message..."
+                      ? "Ask for follow-up changes..."
                       : "Ask about your screen... (type @ for filters, paste images)"
                 }
                 disabled={!canChat}
@@ -6303,44 +6500,70 @@ export function StandaloneChat({
                 <Paperclip className="h-4 w-4" />
               </Button>
               {(() => {
-                // Three button modes:
+                // Four button modes:
                 //   1. streaming + input empty → stop (square)
                 //   2. streaming + input has text → queue (chevron-up, submits, enqueues)
-                //   3. not streaming → send (paper plane)
+                //   3. streaming + input has text → steer (explicit side button; aborts current turn)
+                //   4. not streaming → send (paper plane)
                 const hasInput = input.trim().length > 0 || pastedImages.length > 0;
                 const isQueueMode = (isLoading || isStreaming) && hasInput;
                 const isStopMode = (isLoading || isStreaming) && !hasInput;
                 return (
-                  <Button
-                    type={isStopMode ? "button" : "submit"}
-                    size="icon"
-                    disabled={(!hasInput && !isStopMode) || !canChat}
-                    onClick={isStopMode ? handleStop : undefined}
-                    className={cn(
-                      "h-8 w-8 transition-all duration-200 relative",
-                      "bg-foreground text-background hover:bg-foreground/80"
+                  <>
+                    {isQueueMode && (
+                      <TooltipProvider delayDuration={150}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={!canChat}
+                              onClick={() => steerMessage(input.trim())}
+                              className="h-8 px-2.5 gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60"
+                              aria-label={`steer current message (${formatSteerShortcut(isMac)})`}
+                            >
+                              <CornerDownRight className="h-3.5 w-3.5" />
+                              <span>Steer</span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            Stop current reply and run this now ({formatSteerShortcut(isMac)})
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
                     )}
-                    title={
-                      isStopMode
-                        ? "stop"
-                        : isQueueMode
-                          ? `queue (${queuedPrompts.length + 1} pending)`
-                          : "send"
-                    }
-                  >
-                    {isStopMode ? (
-                      <Square className="h-4 w-4" />
-                    ) : isQueueMode ? (
-                      <ChevronUp className="h-4 w-4" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                    {isQueueMode && queuedPrompts.length > 0 && (
-                      <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] px-1 rounded-full bg-foreground text-background text-[9px] font-mono font-semibold flex items-center justify-center border border-background">
-                        {queuedPrompts.length + 1}
-                      </span>
-                    )}
-                  </Button>
+                    <Button
+                      type={isStopMode ? "button" : "submit"}
+                      size="icon"
+                      disabled={(!hasInput && !isStopMode) || !canChat}
+                      onClick={isStopMode ? handleStop : undefined}
+                      className={cn(
+                        "h-8 w-8 transition-all duration-200 relative",
+                        "bg-foreground text-background hover:bg-foreground/80"
+                      )}
+                      title={
+                        isStopMode
+                          ? "stop"
+                          : isQueueMode
+                            ? `queue with Enter (${queuedPrompts.length + 1} pending)`
+                            : "send"
+                      }
+                    >
+                      {isStopMode ? (
+                        <Square className="h-4 w-4" />
+                      ) : isQueueMode ? (
+                        <ChevronUp className="h-4 w-4" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      {isQueueMode && queuedPrompts.length > 0 && (
+                        <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] px-1 rounded-full bg-foreground text-background text-[9px] font-mono font-semibold flex items-center justify-center border border-background">
+                          {queuedPrompts.length + 1}
+                        </span>
+                      )}
+                    </Button>
+                  </>
                 );
               })()}
             </div>

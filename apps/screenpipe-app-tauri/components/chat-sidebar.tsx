@@ -55,6 +55,7 @@ import { commands } from "@/lib/utils/tauri";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { normalizeQueueEventPayload } from "@/lib/chat-queue-controls";
 
 interface ChatSidebarProps {
   className?: string;
@@ -102,11 +103,12 @@ function useQueueDepths(): Map<string, number> {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     (async () => {
-      const u = await listen<{ sessionId: string; queued: { id: string }[] }>(
+      const u = await listen<{ sessionId?: string; session_id?: string; queued?: { id: string }[] }>(
         "pi-queue-changed",
         (e) => {
           if (cancelled) return;
-          const { sessionId, queued } = e.payload;
+          const { sessionId, queued } = normalizeQueueEventPayload(e.payload);
+          if (!sessionId) return;
           setDepths((prev) => {
             const next = new Map(prev);
             const count = queued?.length ?? 0;
