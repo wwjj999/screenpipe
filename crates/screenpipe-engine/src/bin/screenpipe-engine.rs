@@ -12,6 +12,10 @@ use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use futures::pin_mut;
 use port_check::is_local_ipv4_port_free;
+#[cfg(target_os = "macos")]
+use screenpipe_audio::core::device::{
+    get_cpal_device_and_config, AudioDevice, DeviceType, MACOS_OUTPUT_AUDIO_DEVICE_NAME,
+};
 use screenpipe_audio::{
     core::device::{default_input_device, default_output_device, parse_audio_device},
     meeting_detector::MeetingDetector,
@@ -111,6 +115,43 @@ fn set_fd_limit() {
 fn set_fd_limit() {
     // On Windows, file handle limits work differently and are generally not an issue
     // No action needed
+}
+
+#[cfg(target_os = "macos")]
+async fn doctor_check_system_audio_capture() -> bool {
+    let device = AudioDevice::new(
+        MACOS_OUTPUT_AUDIO_DEVICE_NAME.to_string(),
+        DeviceType::Output,
+    );
+
+    match get_cpal_device_and_config(&device).await {
+        Ok(_) => {
+            eprintln!("  system audio capture: ok");
+            true
+        }
+        Err(e) => {
+            let terminal = screenpipe_core::permissions::detect_terminal();
+            eprintln!("  system audio capture: failed");
+            eprintln!("    ScreenCaptureKit could not open System Audio for this CLI session.");
+            eprintln!(
+                "    macOS grants CLI capture through the terminal app, not the screenpipe app."
+            );
+            eprintln!(
+                "    grant or re-toggle \"{}\" in System Settings > Privacy & Security > Screen & System Audio Recording, then fully restart it.",
+                terminal
+            );
+            eprintln!(
+                "    if you only need a workaround: screenpipe record --experimental-coreaudio-system-audio"
+            );
+            eprintln!("    underlying error: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn doctor_check_system_audio_capture() -> bool {
+    true
 }
 
 const DISPLAY: &str = r"
@@ -339,6 +380,7 @@ async fn main() -> anyhow::Result<()> {
             // permissions
             eprintln!("permissions:");
             let perms_ok = screenpipe_core::permissions::preflight_check(true, true);
+            let system_audio_ok = doctor_check_system_audio_capture().await;
             eprintln!();
 
             // ffmpeg
@@ -362,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
             }
             eprintln!();
 
-            if perms_ok && ffmpeg_ok {
+            if perms_ok && system_audio_ok && ffmpeg_ok {
                 eprintln!("all checks passed — ready to record");
             } else {
                 eprintln!("some checks failed — fix the issues above before running screenpipe");
