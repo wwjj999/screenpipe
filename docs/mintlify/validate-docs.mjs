@@ -100,6 +100,16 @@ for (const file of mdxFiles) {
 
     fail(`${rel}: internal link does not resolve: ${raw}`);
   }
+
+  const imgTagRegex = /<img\b[^>]*>/g;
+  for (const match of source.matchAll(imgTagRegex)) {
+    const tag = match[0];
+    const src = tag.match(/\bsrc=["']([^"']+)["']/)?.[1];
+    if (!src?.startsWith("/app-screenshots/")) continue;
+    if (!/\bwidth=["'][0-9]+["']/.test(tag)) {
+      fail(`${rel}: app screenshot image must include a width attribute so Mintlify serves it through the image CDN: ${src}`);
+    }
+  }
 }
 
 const openApi = read(openApiPath);
