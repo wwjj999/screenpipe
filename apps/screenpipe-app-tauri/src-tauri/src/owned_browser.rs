@@ -442,6 +442,7 @@ pub async fn install(
 
         builder
             .build()
+            .map(crate::window::finalize_webview_window)
             .map_err(|e| format!("WebviewWindowBuilder::build failed: {e}"))?;
 
         info!("owned-browser: top-level webview window created");

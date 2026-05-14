@@ -84,6 +84,8 @@ mod window;
 mod windows_ca_bundle;
 #[cfg(target_os = "windows")]
 mod windows_overlay;
+#[cfg(target_os = "windows")]
+mod windows_webview_env;
 
 pub use server::*;
 
@@ -325,6 +327,9 @@ async fn is_server_running(app: AppHandle) -> Result<bool, String> {
 #[tokio::main]
 async fn main() {
     let _ = fix_path_env::fix();
+
+    #[cfg(target_os = "windows")]
+    windows_webview_env::install_user_data_dir();
 
     // Refuse to launch while a `screenpipe db recover|cleanup` operation is in
     // progress. The CLI writes ~/.screenpipe/.db_recovery.lock before doing
@@ -1287,6 +1292,9 @@ async fn main() {
             } else {
                 registry.init();
             }
+
+            #[cfg(target_os = "windows")]
+            windows_webview_env::log_diagnostics();
 
             // Windows-specific setup
             if cfg!(windows) {
