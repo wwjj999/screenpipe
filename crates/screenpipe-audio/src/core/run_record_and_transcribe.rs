@@ -223,7 +223,7 @@ pub async fn run_record_and_transcribe(
 
         segment_count += 1;
         // Log per-device stats every 10 segments (~5 min at 30 s/segment).
-        if segment_count % 10 == 0 {
+        if segment_count.is_multiple_of(10) {
             source_buffer.log_stats();
         }
 

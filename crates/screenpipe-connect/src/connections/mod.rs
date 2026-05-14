@@ -549,6 +549,13 @@ pub struct ConnectionInfo {
     pub is_oauth: bool,
 }
 
+type CredentialConnection<'a> = (
+    &'a dyn Integration,
+    &'static IntegrationDef,
+    Option<String>,
+    Map<String, Value>,
+);
+
 // ---------------------------------------------------------------------------
 // Pi context rendering — uses proxy URLs instead of raw credentials
 // ---------------------------------------------------------------------------
@@ -561,12 +568,7 @@ pub async fn render_context(
     let integrations = all_integrations();
 
     // Credential-based integrations
-    let mut cred_connected: Vec<(
-        &dyn Integration,
-        &'static IntegrationDef,
-        Option<String>,
-        Map<String, Value>,
-    )> = Vec::new();
+    let mut cred_connected: Vec<CredentialConnection<'_>> = Vec::new();
     for integration in integrations.iter().filter(|i| i.oauth_config().is_none()) {
         let def = integration.def();
         for (instance, conn) in load_all_instances(secret_store, screenpipe_dir, def.id).await {

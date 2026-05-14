@@ -148,6 +148,7 @@ fn selected_engine_model(session: &TranscriptionSession) -> Option<String> {
     Some(model)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn flush_buffer(
     buffer: &mut LiveChunkBuffer,
     session: &mut TranscriptionSession,

@@ -111,6 +111,7 @@ fn replace_with_merged_audio(
 /// improving transcription quality — the whole point of batch mode.
 ///
 /// Returns the number of chunks successfully transcribed.
+#[allow(clippy::too_many_arguments)]
 pub async fn reconcile_untranscribed(
     db: &DatabaseManager,
     transcription_engine: &TranscriptionEngine,
