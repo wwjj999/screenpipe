@@ -105,9 +105,21 @@ for (const file of mdxFiles) {
   for (const match of source.matchAll(imgTagRegex)) {
     const tag = match[0];
     const src = tag.match(/\bsrc=["']([^"']+)["']/)?.[1];
-    if (!src?.startsWith("/app-screenshots/")) continue;
-    if (!/\bwidth=["'][0-9]+["']/.test(tag)) {
-      fail(`${rel}: app screenshot image must include a width attribute so Mintlify serves it through the image CDN: ${src}`);
+    if (!src) continue;
+
+    if (src.startsWith("/app-screenshots/")) {
+      fail(`${rel}: app screenshot images must use https://docs.screenpi.pe/public/app-screenshots/... because Mintlify emits broken raw S3 URLs for ${src}`);
+      continue;
+    }
+
+    if (src.startsWith("https://docs.screenpi.pe/public/app-screenshots/")) {
+      const asset = src.replace("https://docs.screenpi.pe/public/", "");
+      if (!existsSync(join(publicRoot, asset))) {
+        fail(`${rel}: app screenshot image does not exist locally: ${src}`);
+      }
+      if (!/\bwidth=["'][0-9]+["']/.test(tag)) {
+        fail(`${rel}: app screenshot image must include a width attribute: ${src}`);
+      }
     }
   }
 }
