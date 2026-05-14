@@ -516,10 +516,14 @@ impl ShowRewindWindow {
                     page: Some(ref section),
                 } = self
                 {
-                    let _ = window.emit(
-                        "navigate",
-                        serde_json::json!({ "url": format!("/home?section={}", section) }),
-                    );
+                    let url = format!("/home?section={}", section);
+                    let _ = window.emit("navigate", serde_json::json!({ "url": url }));
+                    if let Ok(url_literal) = serde_json::to_string(&url) {
+                        let _ = window.eval(&format!(
+                            "if (window.location.pathname !== '/home') window.location.replace({});",
+                            url_literal
+                        ));
+                    }
                 }
                 window.show().ok();
 
