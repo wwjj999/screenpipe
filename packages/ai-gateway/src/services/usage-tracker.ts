@@ -185,6 +185,7 @@ const DEFAULT_TIER_CONFIG: Record<UserTier, TierLimits> = {
     allowedModels: [
       'auto',
       'claude-haiku-4-5',
+      'gemini-2.5-flash',
       'gemini-3-flash',
       'gemini-3.1-flash-lite',
       'glm-4.7',
@@ -202,6 +203,7 @@ const DEFAULT_TIER_CONFIG: Record<UserTier, TierLimits> = {
       'auto',
       'claude-haiku-4-5',
       'claude-sonnet-4-5',
+      'gemini-2.5-flash',
       'gemini-3-flash',
       'gemini-3.1-flash-lite',
       'gemini-3-pro',
