@@ -105,7 +105,7 @@ function New-SineWaveFile {
   $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
   if ($null -ne $ffmpeg) {
     & $ffmpeg.Source -hide_banner -loglevel error -y `
-      -f lavfi -i "sine=frequency=1000:duration=$DurationSeconds:sample_rate=48000" `
+      -f lavfi -i "sine=frequency=1000:duration=${DurationSeconds}:sample_rate=48000" `
       -af "volume=0.90" $Path
     if ($LASTEXITCODE -eq 0 -and (Test-Path $Path)) {
       return
