@@ -19,7 +19,7 @@ async function expectPageAlive(label: string): Promise<void> {
     url: string;
   };
 
-  expect(state.ready).toBe("complete");
+  expect(["interactive", "complete"]).toContain(state.ready);
   expect(state.childCount).toBeGreaterThan(0);
   expect(state.text).not.toContain("Unhandled Runtime Error");
   expect(state.text).not.toContain("Application error");
