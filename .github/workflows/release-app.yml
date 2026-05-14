@@ -340,14 +340,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/.crates.toml
-            ~/.cargo/.crates2.json
             target/${{ matrix.target }}/release
             apps/screenpipe-app-tauri/src-tauri/target/release
           key: ${{ runner.os }}-artifacts-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-artifacts-${{ matrix.target }}-
+
+      - name: Verify Cargo toolchain
+        shell: bash
+        run: |
+          which cargo
+          cargo --version
 
       - name: Cache Homebrew packages
         if: matrix.platform == 'macos-latest'
