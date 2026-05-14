@@ -971,6 +971,14 @@ async fn main() -> anyhow::Result<()> {
     server.manual_meeting = Some(manual_meeting.clone());
     server.api_auth = config.api_auth;
     server.api_auth_key = config.api_auth_key.clone();
+    // Cloud JWT for the /v1/chat/completions proxy. CLI/binary path reads
+    // SCREENPIPE_API_KEY directly; desktop path overrides via
+    // SCServer::cloud_token_handle after spawn.
+    if let Ok(t) = std::env::var("SCREENPIPE_API_KEY") {
+        if !t.is_empty() {
+            let _ = server.cloud_token.try_write().map(|mut g| *g = Some(t));
+        }
+    }
 
     // Initialize secret store for unified credential management
     let encryption_requested =
