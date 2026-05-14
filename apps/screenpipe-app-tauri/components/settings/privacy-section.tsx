@@ -593,6 +593,7 @@ export function PrivacySection() {
                 onCheckedChange={(checked) => {
                   handleSettingsChange({ apiAuth: checked });
                 }}
+                data-testid="privacy-api-auth-switch"
               />
             </div>
             {hasUnsavedChanges && (
@@ -608,6 +609,7 @@ export function PrivacySection() {
                   type="text"
                   readOnly={!revealApiKey}
                   placeholder="e.g. sp-abc12345"
+                  data-testid="privacy-api-key-input"
                   value={
                     liveApiKey
                       ? revealApiKey
@@ -642,6 +644,7 @@ export function PrivacySection() {
                   title={revealApiKey ? "Hide key" : "Reveal key"}
                   onClick={() => setRevealApiKey((v) => !v)}
                   disabled={!liveApiKey}
+                  data-testid="privacy-api-key-reveal"
                 >
                   {revealApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                 </Button>
@@ -651,6 +654,7 @@ export function PrivacySection() {
                   className="h-8 px-2 shrink-0"
                   title="Copy key"
                   disabled={!liveApiKey}
+                  data-testid="privacy-api-key-copy"
                   onClick={async () => {
                     if (!liveApiKey) return;
                     try {
@@ -676,6 +680,7 @@ export function PrivacySection() {
                   className="h-8 px-2 shrink-0"
                   title="Regenerate key"
                   disabled={regeneratingKey}
+                  data-testid="privacy-api-key-regenerate"
                   onClick={async () => {
                     const { confirm } = await import("@tauri-apps/plugin-dialog");
                     const confirmed = await confirm(
