@@ -5,6 +5,7 @@
 use screenpipe_audio::audio_manager::builder::TranscriptionMode;
 use screenpipe_audio::audio_manager::AudioManagerBuilder;
 use screenpipe_audio::core::engine::AudioTranscriptionEngine;
+use screenpipe_audio::meeting_streaming::MeetingStreamingConfig;
 use screenpipe_audio::transcription::VocabularyEntry;
 use screenpipe_audio::vad::VadEngineEnum;
 use screenpipe_config::{ChannelConfig, DbConfig};
@@ -50,6 +51,7 @@ pub struct RecordingConfig {
     // Engines (typed, not strings)
     pub audio_transcription_engine: AudioTranscriptionEngine,
     pub transcription_mode: TranscriptionMode,
+    pub meeting_streaming: MeetingStreamingConfig,
 
     // Devices & monitors
     pub audio_devices: Vec<String>,
@@ -197,6 +199,21 @@ impl RecordingConfig {
                 "smart" | "batch" => TranscriptionMode::Batch,
                 _ => TranscriptionMode::Realtime,
             },
+            meeting_streaming: MeetingStreamingConfig::from_settings(
+                settings.meeting_live_transcription_enabled,
+                &settings.meeting_live_transcription_provider,
+                settings.effective_user_id().map(str::to_string),
+                match settings.meeting_live_transcription_provider.as_str() {
+                    "deepgram-live" | "deepgram_live" => Some(settings.deepgram_api_key.clone()),
+                    _ => None,
+                },
+                settings
+                    .languages
+                    .iter()
+                    .find(|s| s.as_str() != "default")
+                    .cloned(),
+                settings.effective_user_name().map(str::to_string),
+            ),
             audio_devices: settings.audio_devices.clone(),
             use_system_default_audio: settings.use_system_default_audio,
             experimental_coreaudio_system_audio: settings.experimental_coreaudio_system_audio,
@@ -307,6 +324,7 @@ impl RecordingConfig {
             .use_pii_removal(self.use_pii_removal)
             .filter_music(self.filter_music)
             .transcription_mode(self.transcription_mode.clone())
+            .meeting_streaming(self.meeting_streaming.clone())
             .vocabulary(self.vocabulary.clone())
             .batch_max_duration_secs(self.batch_max_duration_secs)
             .channel_config(self.channel_config.clone())

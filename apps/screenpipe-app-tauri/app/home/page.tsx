@@ -57,6 +57,7 @@ import { EnterpriseLicensePrompt } from "@/components/enterprise-license-prompt"
 import { PipeActivityIndicator } from "@/components/pipe-activity-indicator";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { computeMeetingActive, type MeetingStatusResponse } from "@/lib/utils/meeting-state";
+import type { MeetingRecord } from "@/lib/utils/meeting-format";
 import { useRouter } from "next/navigation";
 import { appendAuthToken, ensureApiReady, getApiBaseUrl, localFetch } from "@/lib/api";
 import {
@@ -378,7 +379,7 @@ function HomeContent() {
     };
   }, []);
 
-  const toggleMeeting = useCallback(async (seed?: { title?: string; attendees?: string }) => {
+  const toggleMeeting = useCallback(async (seed?: { title?: string; attendees?: string; resumeMeetingId?: number }) => {
     setMeetingLoading(true);
     try {
       if (meetingState.active) {
@@ -390,6 +391,7 @@ function HomeContent() {
           body: JSON.stringify({ id: targetId }),
         });
         if (res.ok) {
+          const meeting: MeetingRecord = await res.json();
           manualMeetingStartedAt.current = 0;
           setMeetingState({
             active: false,
@@ -399,11 +401,17 @@ function HomeContent() {
             meetingApp: null,
             detectionSource: null,
           });
+          return meeting;
         }
+        const bodyText = await res.text().catch(() => "");
+        throw new Error(
+          `stop meeting failed: HTTP ${res.status}${bodyText ? ` — ${bodyText}` : ""}`,
+        );
       } else {
         // No meeting active — start a manual one (optionally seeded from a
-        // calendar event when the caller has it).
-        const body: Record<string, string> = { app: "manual" };
+        // calendar event when the caller has it), or resume an existing note.
+        const body: Record<string, string | number> = { app: "manual" };
+        if (seed?.resumeMeetingId) body.id = seed.resumeMeetingId;
         if (seed?.title) body.title = seed.title;
         if (seed?.attendees) body.attendees = seed.attendees;
         const res = await localFetch("/meetings/start", {
@@ -412,19 +420,26 @@ function HomeContent() {
           body: JSON.stringify(body),
         });
         if (res.ok) {
+          const meeting: MeetingRecord = await res.json();
           manualMeetingStartedAt.current = Date.now();
           setMeetingState({
             active: true,
             manualActive: true,
-            activeMeetingId: null,
-            stoppableMeetingId: null,
-            meetingApp: "manual",
-            detectionSource: "manual",
+            activeMeetingId: meeting.id,
+            stoppableMeetingId: meeting.id,
+            meetingApp: meeting.meeting_app,
+            detectionSource: meeting.detection_source,
           });
+          return meeting;
         }
+        const bodyText = await res.text().catch(() => "");
+        throw new Error(
+          `start meeting failed: HTTP ${res.status}${bodyText ? ` — ${bodyText}` : ""}`,
+        );
       }
     } catch (e) {
       console.error("meeting toggle failed:", e);
+      throw e;
     } finally {
       setMeetingLoading(false);
     }

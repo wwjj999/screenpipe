@@ -37,8 +37,29 @@ export interface MeetingAudioChunk {
   audioFilePath: string;
   speakerId: number | null;
   speakerName: string;
+  deviceType: string;
+  isInput: boolean;
   transcription: string;
   timestamp: string;
+  source?: "background" | "live";
+}
+
+interface MeetingTranscriptSegment {
+  id: number;
+  meetingId: number;
+  source?: "background" | "live";
+  provider: string;
+  model?: string | null;
+  itemId: string;
+  deviceName: string;
+  deviceType: string;
+  audioTranscriptionId?: number | null;
+  audioChunkId?: number | null;
+  audioFilePath?: string | null;
+  speakerId?: number | null;
+  speakerName?: string | null;
+  transcript: string;
+  capturedAt: string;
 }
 
 export interface SpeakerSummary {
@@ -596,6 +617,7 @@ interface SearchAudioItem {
     transcription?: string;
     timestamp?: string;
     file_path?: string;
+    device_type?: string;
     speaker?: { id?: number; name?: string } | null;
   };
 }
@@ -611,9 +633,13 @@ export async function fetchMeetingAudio(
   startIso: string,
   endIso: string,
   cap = 1000,
+  meetingId?: number,
 ): Promise<MeetingAudioChunk[]> {
+  const routedRows = await fetchRoutedMeetingTranscript(meetingId, cap);
+  if (routedRows.length > 0) return routedRows;
+
   const out: MeetingAudioChunk[] = [];
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const pageSize = 200;
   let offset = 0;
   for (let page = 0; page < 10 && out.length < cap; page++) {
@@ -629,16 +655,23 @@ export async function fetchMeetingAudio(
         const c = item.content;
         if (!c) continue;
         const id = c.chunk_id;
-        if (typeof id !== "number" || seen.has(id)) continue;
+        if (typeof id !== "number") continue;
         if (!c.transcription || !c.timestamp || !c.file_path) continue;
-        seen.add(id);
+        const rowKey = `${id}:${c.timestamp}:${c.transcription}`;
+        if (seen.has(rowKey)) continue;
+        const deviceType = c.device_type ?? "";
+        const isInput = deviceType.toLowerCase() === "input";
+        seen.add(rowKey);
         out.push({
           audioChunkId: id,
           audioFilePath: c.file_path,
-          speakerId: c.speaker?.id ?? null,
-          speakerName: c.speaker?.name ?? "unknown",
+          speakerId: isInput ? null : c.speaker?.id ?? null,
+          speakerName: isInput ? "me" : c.speaker?.name ?? "",
+          deviceType,
+          isInput,
           transcription: c.transcription,
           timestamp: c.timestamp,
+          source: "background",
         });
       }
       if (items.length < pageSize) break;
@@ -649,6 +682,49 @@ export async function fetchMeetingAudio(
   }
   out.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   return out;
+}
+
+async function fetchRoutedMeetingTranscript(
+  meetingId: number | undefined,
+  cap: number,
+): Promise<MeetingAudioChunk[]> {
+  if (typeof meetingId !== "number" || !Number.isFinite(meetingId)) return [];
+
+  try {
+    const res = await localFetch(`/meetings/${meetingId}/transcript`);
+    if (!res.ok) return [];
+    const body = (await res.json()) as MeetingTranscriptSegment[];
+    return body
+      .slice(0, cap)
+      .filter((segment) => segment.transcript?.trim() && segment.capturedAt)
+      .map((segment) => {
+        const deviceType = segment.deviceType ?? "";
+        const isInput = deviceType.toLowerCase() === "input";
+        const source = segment.source ?? "live";
+        return {
+          audioChunkId:
+            typeof segment.audioChunkId === "number"
+              ? segment.audioChunkId
+              : -segment.id,
+          audioFilePath: segment.audioFilePath ?? "",
+          speakerId: isInput ? null : segment.speakerId ?? null,
+          speakerName: isInput
+            ? "me"
+            : segment.speakerName?.trim() || "speaker",
+          deviceType,
+          isInput,
+          transcription: segment.transcript,
+          timestamp: segment.capturedAt,
+          source,
+        };
+      })
+      .sort(
+        (a, b) =>
+          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+      );
+  } catch {
+    return [];
+  }
 }
 
 /**

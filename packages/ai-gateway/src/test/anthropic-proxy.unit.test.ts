@@ -586,7 +586,7 @@ describe('isModelAllowed with Anthropic model IDs', () => {
 	});
 
 	it('should allow gemini flash for anonymous', () => {
-		expect(isModelAllowed('gemini-2.5-flash', 'anonymous')).toBe(true);
+		expect(isModelAllowed('gemini-3.1-flash-lite', 'anonymous')).toBe(true);
 	});
 });
 

@@ -365,6 +365,10 @@ pub(crate) async fn search(
                     speaker: audio.speaker.clone(),
                     start_time: audio.start_time,
                     end_time: audio.end_time,
+                    source: audio.source.clone(),
+                    meeting_id: audio.meeting_id,
+                    provider: audio.provider.clone(),
+                    model: audio.model.clone(),
                 }),
                 SearchResult::UI(ui) => ContentItem::UI(UiContent {
                     id: ui.id,

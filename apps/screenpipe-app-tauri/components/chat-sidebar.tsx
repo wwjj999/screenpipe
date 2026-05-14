@@ -56,6 +56,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { normalizeQueueEventPayload } from "@/lib/chat-queue-controls";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface ChatSidebarProps {
   className?: string;
@@ -137,6 +138,7 @@ function useQueueDepths(): Map<string, number> {
  */
 export function ChatSidebar({ className }: ChatSidebarProps) {
   const currentId = useChatStore((s) => s.currentId);
+  const diskHydrated = useChatStore((s) => s.diskHydrated);
   const actions = useChatActions();
   const queueDepths = useQueueDepths();
 
@@ -187,6 +189,7 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
   };
 
   const { pinned, recents } = useVisibleChatSections();
+  const recentsLoading = !diskHydrated && recents.length === 0;
 
   const handleSelect = (id: string) => {
     // No early return for id === currentId. Two reasons:
@@ -302,6 +305,7 @@ export function ChatSidebar({ className }: ChatSidebarProps) {
 
       <CollapsibleRecents
         empty={recents.length === 0}
+        loading={recentsLoading}
         emptyText={
           pinned.length === 0
             ? "no chats yet — click + to start"
@@ -332,6 +336,7 @@ export function CollapsedChatSidebarButton({
   isTranslucent: boolean;
 }) {
   const currentId = useChatStore((s) => s.currentId);
+  const diskHydrated = useChatStore((s) => s.diskHydrated);
   const { pinned, recents } = useVisibleChatSections();
   const [open, setOpen] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -342,6 +347,9 @@ export function CollapsedChatSidebarButton({
   const emptyText = visiblePinned.length === 0
     ? "no chats yet — click + to start"
     : "no recent chats";
+  const recentsTabLoading = !diskHydrated && visibleRecents.length === 0;
+  const isLoadingChats =
+    !diskHydrated && visiblePinned.length === 0 && visibleRecents.length === 0;
 
   useEffect(() => {
     if (visiblePinned.length === 0 && activeTab === "pinned") {
@@ -408,7 +416,11 @@ export function CollapsedChatSidebarButton({
         sideOffset={8}
         className="w-64 p-0 rounded-none shadow-none"
       >
-        {visiblePinned.length === 0 && visibleRecents.length === 0 ? (
+        {isLoadingChats ? (
+          <div className="py-1" aria-busy="true" data-testid="collapsed-chat-sidebar-skeleton">
+            <ChatRowsSkeleton rows={4} />
+          </div>
+        ) : visiblePinned.length === 0 && visibleRecents.length === 0 ? (
           <div className="px-2.5 py-2 text-xs text-muted-foreground/70 italic">
             {emptyText}
           </div>
@@ -440,7 +452,11 @@ export function CollapsedChatSidebarButton({
               )}
             </TabsList>
             <TabsContent value="recents" className="mt-0">
-              {visibleRecents.length === 0 ? (
+              {recentsTabLoading ? (
+                <div className="py-1" aria-busy="true">
+                  <ChatRowsSkeleton rows={4} />
+                </div>
+              ) : visibleRecents.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground/70 italic">
                   {visiblePinned.length === 0 ? emptyText : "no recent chats"}
                 </div>
@@ -494,10 +510,12 @@ export function CollapsedChatSidebarButton({
  *  scrollable body underneath. Click the header to collapse. */
 function CollapsibleRecents({
   empty,
+  loading = false,
   emptyText,
   children,
 }: {
   empty: boolean;
+  loading?: boolean;
   emptyText: string;
   children: React.ReactNode;
 }) {
@@ -538,8 +556,11 @@ function CollapsibleRecents({
         <div
           id="chat-sidebar-recents"
           className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-hide"
+          aria-busy={loading}
         >
-          {empty ? (
+          {loading ? (
+            <ChatRowsSkeleton rows={6} />
+          ) : empty ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground/70 italic">
               {emptyText}
             </div>
@@ -548,6 +569,40 @@ function CollapsibleRecents({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+const CHAT_ROW_SKELETON_WIDTHS = [
+  "w-[82%]",
+  "w-[68%]",
+  "w-[88%]",
+  "w-[58%]",
+  "w-[74%]",
+  "w-[64%]",
+] as const;
+
+function ChatRowsSkeleton({ rows }: { rows: number }) {
+  return (
+    <div
+      className="flex flex-col"
+      aria-hidden
+      data-testid="chat-sidebar-recents-skeleton"
+    >
+      {Array.from({ length: rows }).map((_, index) => (
+        <div
+          key={index}
+          className="flex items-center gap-2 px-2.5 py-1 rounded-md select-none"
+        >
+          <span className="h-1.5 w-1.5 rounded-full border border-muted-foreground/25 bg-transparent animate-pulse shrink-0" />
+          <Skeleton
+            className={cn(
+              "h-3 rounded-sm bg-muted-foreground/15",
+              CHAT_ROW_SKELETON_WIDTHS[index % CHAT_ROW_SKELETON_WIDTHS.length]
+            )}
+          />
+        </div>
+      ))}
     </div>
   );
 }
@@ -858,15 +913,12 @@ interface ChatRowProps {
  * (That's why "delete chat doesn't work" — the X click was eaten by the
  * outer button.)
  *
- * Left-side status indicator — minimalist, monochrome (no brand colors;
- * screenpipe is black/white):
- *   ●  filled foreground dot + slow pulse  → streaming/thinking/tool
- *   ●  filled foreground dot               → unread (new content)
- *   ⚠  alert icon, red (single exception)  → error
- *   ○  hollow ring                         → idle (default)
- *
- * Animation is a custom ~1.6s pulse — slow + soft so it sits in the
- * peripheral vision without pulling focus.
+ * Left-side bullet stays stable; the right-side status slot carries
+ * exactly one signal:
+ *   loading dot → streaming/thinking/tool/queued
+ *   unread dot  → new content
+ *   compact age → idle/read
+ *   ⚠           → error
  *
  * No preview line below the title. The title alone is what the user
  * picks chats by; partial Pi tokens leaking into the row read as noise.
@@ -886,6 +938,9 @@ export function SidebarChatRow({
     session.status === "tool";
   const isError = session.status === "error";
   const isUnread = session.unread && !isCurrent;
+  const activityAt = session.lastUserMessageAt ?? session.updatedAt ?? session.createdAt;
+  const now = useMinuteTick(!isLive && !isUnread && !isError && queuedCount === 0);
+  const age = formatCompactAge(activityAt, now);
   return (
     <div
       role="button"
@@ -908,14 +963,7 @@ export function SidebarChatRow({
       title={isError && session.lastError ? session.lastError : undefined}
     >
       <div className="flex items-center gap-2 min-w-0">
-        {/* Left-side status indicator. One slot, four states, no jitter
-            between them (same outer dimensions). */}
-        <StatusDot
-          isLive={isLive}
-          isError={isError}
-          isUnread={isUnread}
-          status={session.status}
-        />
+        <RowBullet />
         <span
           className={cn(
             "truncate flex-1 text-xs",
@@ -928,17 +976,15 @@ export function SidebarChatRow({
         >
           {session.title || "untitled"}
         </span>
-        {/* Queued-prompts badge — only visible when this session has rust-side
-            queued items waiting. Hidden on hover so it doesn't fight the
-            pin/close buttons for the same slot. */}
-        {queuedCount > 0 && showActions && (
-          <span
-            className="group-hover:hidden inline-flex items-center gap-0.5 px-1 text-[10px] font-mono text-muted-foreground/80 shrink-0"
-            title={`${queuedCount} queued`}
-          >
-            ↑{queuedCount}
-          </span>
-        )}
+        <RowRightSignal
+          isLive={isLive}
+          isError={isError}
+          isUnread={isUnread}
+          queuedCount={queuedCount}
+          status={session.status}
+          age={age}
+          hideOnHover={showActions}
+        />
         {/* hover-only actions — REAL <button>s now (was <span role=button>
             inside the outer <button>, which is invalid nested-button HTML
             and made the X click silently no-op on close). */}
@@ -985,53 +1031,115 @@ export function SidebarChatRow({
   );
 }
 
-/** Status indicator dot — 8px hit-target, 6px visual, single-slot so the
- *  row layout doesn't shift between states. */
-function StatusDot({
-  isLive,
-  isError,
-  isUnread,
-  status,
-}: {
-  isLive: boolean;
-  isError: boolean;
-  isUnread: boolean;
-  status: string;
-}) {
-  if (isError) {
-    return (
-      <AlertCircle
-        className="h-3 w-3 text-red-500 shrink-0"
-        aria-label="error"
-      />
-    );
-  }
-  if (isLive) {
-    return (
-      <span
-        className="relative h-2 w-2 shrink-0 flex items-center justify-center"
-        aria-label={status}
-      >
-        {/* outer halo — slow gentle pulse, monochrome */}
-        <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
-        {/* inner dot — solid foreground */}
-        <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
-      </span>
-    );
-  }
-  if (isUnread) {
-    return (
-      <span
-        className="h-1.5 w-1.5 rounded-full bg-foreground shrink-0"
-        aria-label="unread"
-      />
-    );
-  }
-  // idle — hollow ring (matches Claude's pattern)
+/** Stable left-side bullet. State belongs in the right slot so each row
+ *  reads as one clear signal instead of two competing indicators. */
+function RowBullet() {
   return (
     <span
       className="h-1.5 w-1.5 rounded-full border border-muted-foreground/40 shrink-0"
       aria-hidden
     />
   );
+}
+
+function RowRightSignal({
+  isLive,
+  isError,
+  isUnread,
+  queuedCount,
+  status,
+  age,
+  hideOnHover,
+}: {
+  isLive: boolean;
+  isError: boolean;
+  isUnread: boolean;
+  queuedCount: number;
+  status: string;
+  age: string | null;
+  hideOnHover: boolean;
+}) {
+  const content = (() => {
+    if (isError) {
+      return (
+        <AlertCircle
+          className="h-3 w-3 text-red-500"
+          aria-label="error"
+        />
+      );
+    }
+    if (isLive) {
+      return <LiveSignal ariaLabel={status} />;
+    }
+    if (queuedCount > 0) {
+      return <LiveSignal ariaLabel={`${queuedCount} queued`} />;
+    }
+    if (isUnread) {
+      return (
+        <span
+          className="h-1.5 w-1.5 rounded-full bg-foreground"
+          aria-label="unread"
+        />
+      );
+    }
+    if (age) {
+      return (
+        <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+          {age}
+        </span>
+      );
+    }
+    return null;
+  })();
+
+  if (!content) return null;
+
+  return (
+    <span
+      className={cn(
+        "ml-1 min-w-5 shrink-0 inline-flex justify-end",
+        hideOnHover && "group-hover:hidden"
+      )}
+    >
+      {content}
+    </span>
+  );
+}
+
+function LiveSignal({ ariaLabel = "loading" }: { ariaLabel?: string }) {
+  return (
+    <span
+      className="relative h-2 w-2 shrink-0 flex items-center justify-center"
+      aria-label={ariaLabel}
+    >
+      <span className="absolute inset-0 rounded-full bg-foreground/30 animate-[sp-pulse_1.6s_ease-in-out_infinite]" />
+      <span className="relative h-1.5 w-1.5 rounded-full bg-foreground" />
+    </span>
+  );
+}
+
+function useMinuteTick(enabled = true): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, [enabled]);
+  return now;
+}
+
+function formatCompactAge(timestamp?: number, now = Date.now()): string | null {
+  if (!timestamp || !Number.isFinite(timestamp)) return null;
+  const ms = Math.max(0, now - timestamp);
+  if (ms < 60_000) return "now";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  if (days < 365) return `${Math.max(1, Math.floor(days / 30))}mo`;
+  return `${Math.floor(days / 365)}y`;
 }

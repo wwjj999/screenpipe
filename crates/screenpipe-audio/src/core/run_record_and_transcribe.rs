@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     core::{device::DeviceType, update_device_capture_time},
+    meeting_streaming::{MeetingAudioFrame, MeetingAudioTap},
     metrics::AudioPipelineMetrics,
     AudioInput,
 };
@@ -93,6 +94,7 @@ pub async fn run_record_and_transcribe(
     whisper_sender: Arc<crossbeam::channel::Sender<AudioInput>>,
     is_running: Arc<AtomicBool>,
     metrics: Arc<AudioPipelineMetrics>,
+    live_audio_tap: Option<MeetingAudioTap>,
 ) -> Result<()> {
     let mut receiver = audio_stream.subscribe().await;
     let device_name = audio_stream.device.to_string();
@@ -200,7 +202,20 @@ pub async fn run_record_and_transcribe(
                     // Route through the source buffer so Bluetooth packet-drop gaps
                     // are converted to silence instead of crackle.
                     source_buffer.push(chunk);
-                    collected_audio.extend(source_buffer.drain_all());
+                    let drained = source_buffer.drain_all();
+                    if let Some(tap) = live_audio_tap.as_ref() {
+                        if tap.is_active() && !drained.is_empty() {
+                            let frame = MeetingAudioFrame::new(
+                                Arc::new(drained.clone()),
+                                &audio_stream.device,
+                                audio_stream.device_config.sample_rate().0,
+                                audio_stream.device_config.channels(),
+                                now_epoch_millis(),
+                            );
+                            tap.send(frame);
+                        }
+                    }
+                    collected_audio.extend(drained);
                 }
                 None => continue,
             }
@@ -387,6 +402,13 @@ fn now_epoch_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs()
+}
+
+fn now_epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis() as u64
 }
 
 /// Send the collected audio to the Whisper channel and keep the overlap tail.

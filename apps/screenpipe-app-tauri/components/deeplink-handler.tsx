@@ -213,6 +213,25 @@ export function DeeplinkHandler() {
           }
         }
       }
+
+      // Handle meeting note deep links:
+      //   screenpipe://meeting/123?live=1
+      //   screenpipe://meeting?id=123
+      if (parsedUrl.host === "meeting" || parsedUrl.pathname?.startsWith("/meeting/")) {
+        const pathId =
+          parsedUrl.host === "meeting"
+            ? parsedUrl.pathname.replace(/^\/+/, "").split("/")[0]
+            : parsedUrl.pathname.replace(/^\/meeting\/?/, "").split("/")[0];
+        const meetingId = parsedUrl.searchParams.get("id") || pathId;
+        if (meetingId) {
+          await commands.showWindowActivated({ Home: { page: "meetings" } });
+          await emit("navigate", { url: "/home?section=meetings" });
+          await emit("open-meeting-note", {
+            meetingId: Number(meetingId),
+            transcript: parsedUrl.searchParams.get("live") !== "0",
+          });
+        }
+      }
     };
 
     const setupDeepLink = async () => {

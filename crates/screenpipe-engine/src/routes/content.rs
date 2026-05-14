@@ -84,6 +84,14 @@ pub struct AudioContent {
     pub speaker: Option<Speaker>,
     pub start_time: Option<f64>,
     pub end_time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]

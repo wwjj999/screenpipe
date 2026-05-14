@@ -39,6 +39,13 @@ interface NotificationPayload {
   pipe_name?: string;
 }
 
+function windowForDeeplink(url: string) {
+  return url.startsWith("screenpipe://meeting/") ||
+    url.startsWith("screenpipe://meeting?")
+    ? { Home: { page: "meetings" } }
+    : "Main";
+}
+
 /** Extract `path` from a `screenpipe://view?path=…` deeplink, or null. */
 function viewerPathFromHref(href: string): string | null {
   if (!href.startsWith("screenpipe://view")) return null;
@@ -179,7 +186,9 @@ export default function NotificationPanelPage() {
                   // emitting. Without this ordering, the emit fires into a
                   // handler that hasn't subscribed yet and the click silently
                   // does nothing.
-                  await invoke("show_window_activated", { window: "Main" });
+                  await invoke("show_window_activated", {
+                    window: windowForDeeplink(actionObj.url),
+                  });
                   await new Promise((r) => setTimeout(r, 150));
                   await emit("deep-link-received", actionObj.url);
                 } else {

@@ -26,6 +26,13 @@ type NotificationRequested = {
   body: string;
 };
 
+function windowForDeeplink(url: string) {
+  return url.startsWith("screenpipe://meeting/") ||
+    url.startsWith("screenpipe://meeting?")
+    ? { Home: { page: "meetings" } }
+    : "Main";
+}
+
 const NotificationHandler: React.FC = () => {
 
   useEffect(() => {
@@ -193,7 +200,9 @@ const NotificationHandler: React.FC = () => {
         if ((action.type === "link" || action.type === "deeplink") && action.url) {
           if (typeof action.url === "string" && action.url.startsWith("screenpipe://")) {
             const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("show_window_activated", { window: "Main" });
+            await invoke("show_window_activated", {
+              window: windowForDeeplink(action.url),
+            });
             await new Promise((r) => setTimeout(r, 150));
             const { emit } = await import("@tauri-apps/api/event");
             await emit("deep-link-received", action.url);

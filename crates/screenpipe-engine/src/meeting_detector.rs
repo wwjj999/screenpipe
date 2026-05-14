@@ -2266,6 +2266,8 @@ pub async fn run_meeting_detection_loop(
 
     // Subscribe to explicit stop signals from the API layer
     let mut stop_sub = subscribe_to_event::<DetectorStopSignal>("detector_stop_tracking");
+    let mut auto_end_sub =
+        subscribe_to_event::<MeetingAutoEndRequest>("meeting_auto_end_requested");
 
     info!(
         "meeting v2: detection loop started (base_interval={:?}, profiles={})",
@@ -2320,6 +2322,61 @@ pub async fn run_meeting_detection_loop(
                     state = MeetingState::Idle;
                     current_interval = IDLE_APPS_SCAN_INTERVAL;
                     sync_meeting_flag(false, &in_meeting_flag, &detector);
+                }
+            }
+        }
+
+        if let Some(event) = auto_end_sub.next().now_or_never().flatten() {
+            let request = event.data;
+            let manual_matches = { *manual_meeting.read().await == Some(request.meeting_id) };
+            let detector_matches = matches!(
+                &state,
+                MeetingState::Active { meeting_id, .. }
+                    | MeetingState::Ending { meeting_id, .. }
+                    if *meeting_id == request.meeting_id
+            );
+
+            if manual_matches || detector_matches {
+                let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+                match db
+                    .end_meeting_with_typed_text(request.meeting_id, &now, false)
+                    .await
+                {
+                    Ok(()) => {
+                        info!(
+                            "meeting v2: auto-ended inactive live meeting (id={}, reason={})",
+                            request.meeting_id,
+                            request.reason.as_deref().unwrap_or("unknown")
+                        );
+                        if manual_matches {
+                            let mut manual = manual_meeting.write().await;
+                            if *manual == Some(request.meeting_id) {
+                                *manual = None;
+                            }
+                        }
+                        if detector_matches {
+                            state = MeetingState::Idle;
+                            current_interval = IDLE_APPS_SCAN_INTERVAL;
+                        }
+                        sync_meeting_flag(false, &in_meeting_flag, &detector);
+                        if let Ok(status) =
+                            resolve_meeting_status_from(db.as_ref(), manual_meeting.as_ref()).await
+                        {
+                            emit_meeting_status_changed(&status);
+                        }
+                        if let Err(e) = screenpipe_events::send_event(
+                            "meeting_ended",
+                            serde_json::json!({ "meeting_id": request.meeting_id }),
+                        ) {
+                            warn!("meeting v2: failed to emit meeting_ended event: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "meeting v2: failed to auto-end inactive live meeting {}: {}",
+                            request.meeting_id, e
+                        );
+                    }
                 }
             }
         }
@@ -2768,6 +2825,13 @@ struct CalendarEventSignal {
     pub attendees: Vec<String>,
     #[serde(default)]
     pub is_all_day: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MeetingAutoEndRequest {
+    meeting_id: i64,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

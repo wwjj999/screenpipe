@@ -256,20 +256,22 @@ async isEnterpriseBuildCmd() : Promise<boolean> {
     return await TAURI_INVOKE("is_enterprise_build_cmd");
 },
 /**
- * Add or remove the "Cloud audio + video + image analysis" section in
- * `~/.claude/skills/screenpipe-api/SKILL.md`.
+ * Toggle the "Cloud audio + video + image analysis" capability
+ * in the screenpipe-api skill that Pi installs on every run.
  * 
- * The skill markdown IS the policy: when this section is present, Pi
- * (and any Claude Code agent reading the skill) can call the
- * confidential enclave endpoint; when it's absent, agents don't even
- * know the capability exists, so privacy-strict users get a clean
- * world view without conditional logic.
+ * Mechanism: the screenpipe-core `Pi::ensure_screenpipe_skill` reads
+ * `~/.screenpipe/cloud_media_analysis.disabled` at install time and
+ * conditionally appends the Gemma 4 E4B confidential-enclave section
+ * to `<project>/.pi/skills/screenpipe-api/SKILL.md`. Default (no
+ * marker) = enabled. This command just creates or removes the marker.
  * 
- * Idempotent — repeated calls with the same value are no-ops. If the
- * SKILL.md file doesn't exist (Claude Code not installed / skill not
- * synced yet), the command silently returns Ok(()) — the user's
- * setting is still persisted on the frontend side and will take
- * effect once the skill file appears.
+ * Why a marker file instead of editing the rendered skill: Pi rewrites
+ * the rendered skill from a compiled-in template on every run, so any
+ * post-install edits get overwritten on the next pipe execution. The
+ * only stable seam is at install time.
+ * 
+ * Idempotent. Effect takes hold on the next Pi run (next pipe
+ * execution or new pi-chat session).
  */
 async setCloudMediaAnalysisSkill(enabled: boolean) : Promise<Result<null, string>> {
     try {
@@ -1466,6 +1468,17 @@ audioTranscriptionEngine: string;
  * Previously stored in SettingsStore.extra["transcriptionMode"].
  */
 transcriptionMode: string; 
+/**
+ * Stream live notes only while a meeting is active. This is separate
+ * from 24/7 background transcription: the recorder still writes durable
+ * chunks, while this powers the low-latency meeting note UI.
+ */
+meetingLiveTranscriptionEnabled: boolean; 
+/**
+ * Provider for meeting-only live notes. Defaults to the selected audio
+ * transcription engine so local/custom engines work without Cloud.
+ */
+meetingLiveTranscriptionProvider: string; 
 /**
  * Audio device names/IDs to capture from.
  */
