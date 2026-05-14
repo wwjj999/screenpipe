@@ -32,6 +32,13 @@ screenpipe records meetings without a bot joining the call. it captures the meet
 4. let screenpipe record and transcribe in the background.
 5. open the meeting from the timeline or search with `content_type=audio`.
 
+quick verification:
+
+```bash
+curl http://localhost:3030/health
+curl "http://localhost:3030/search?content_type=audio&limit=1"
+```
+
 <Tip>
 calendar context is especially strong for 1:1 meetings. when the meeting has exactly two attendees, screenpipe can infer the other speaker more reliably.
 </Tip>
@@ -62,6 +69,19 @@ Summarize the meeting in this format:
 ## follow-up email draft
 
 Use transcript evidence and include timeline links when useful.
+```
+
+for customer calls, add evidence fields so the output is usable:
+
+```markdown
+Summarize the meeting.
+Include:
+- customer goal
+- current workflow
+- objections or privacy concerns
+- requested integrations
+- next action
+- exact transcript quotes only when useful
 ```
 
 ## speaker cleanup
