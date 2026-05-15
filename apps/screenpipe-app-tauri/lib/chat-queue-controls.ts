@@ -81,6 +81,16 @@ export function formatSteerShortcut(isMac: boolean): string {
   return isMac ? "Cmd+Enter" : "Ctrl+Enter";
 }
 
+export type ComposerPrimaryAction = "send" | "steer" | "stop";
+
+export function getComposerPrimaryAction(
+  isBusy: boolean,
+  hasInput: boolean,
+): ComposerPrimaryAction {
+  if (!isBusy) return "send";
+  return hasInput ? "steer" : "stop";
+}
+
 export function queuedPreviewMatchesText(preview: string, text: string): boolean {
   if (!preview) return text.length === 0;
   return text.startsWith(preview);

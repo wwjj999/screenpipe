@@ -66,6 +66,7 @@ import { localFetch, getApiBaseUrl } from "@/lib/api";
 import { getFaviconUrl } from "@/components/rewind/timeline/favicon-utils";
 import {
   formatSteerShortcut,
+  getComposerPrimaryAction,
   isComposerSteerShortcut,
   isQueuedItemCancelShortcut,
   isQueuedItemSteerShortcut,
@@ -3030,10 +3031,8 @@ export function StandaloneChat({
       return;
     }
 
-    // Enter without shift submits the form. We intentionally don't gate on
-    // isLoading anymore — if a previous prompt is still streaming, the new
-    // one is enqueued at the rust level (see `pi_command_queue.rs`) and
-    // shown in the queued-cards rail under the transcript.
+    // Enter without shift submits the form. While Pi is replying, submit maps
+    // to native steering so the correction applies to the current answer.
     if (e.key === "Enter" && !e.shiftKey && !showMentionDropdown) {
       e.preventDefault();
       if (input.trim() || pastedImages.length > 0) {
@@ -4475,6 +4474,17 @@ export function StandaloneChat({
    * the chat-store — same path used for any other message, just kicked off
    * after the queue drains.
    */
+  function imageDataUrlsToPiImages(images: string[]) {
+    const piImages: Array<{ type: string; mimeType: string; data: string }> = [];
+    for (const img of images) {
+      const match = img.match(/^data:(image\/[^;]+);base64,(.+)$/);
+      if (match) {
+        piImages.push({ type: "image", mimeType: match[1], data: match[2] });
+      }
+    }
+    return piImages;
+  }
+
   async function enqueuePiMessage(userMessage: string, displayLabel?: string) {
     if (!piInfo?.running) {
       // No Pi running → fall back to the normal start-and-send path.
@@ -4534,13 +4544,7 @@ export function StandaloneChat({
 
     // Convert any data-URL pastes to the Pi image-content shape (same format
     // used by the normal send path further down in this file).
-    const piImages: Array<{ type: string; mimeType: string; data: string }> = [];
-    for (const img of pastedImages) {
-      const match = img.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (match) {
-        piImages.push({ type: "image", mimeType: match[1], data: match[2] });
-      }
-    }
+    const piImages = imageDataUrlsToPiImages(pastedImages);
     if (pastedImages.length > 0) setPastedImages([]);
 
     try {
@@ -5006,18 +5010,20 @@ export function StandaloneChat({
   async function sendMessage(userMessage: string, displayLabel?: string) {
     if ((!canChat && !autoSendBypassRef.current) || (!activePreset && !autoSendBypassRef.current)) return;
 
-    // If a previous prompt is still streaming, enqueue this one at the rust
-    // level instead of going through sendPiMessage (which aborts the previous
-    // turn — exactly what we DON'T want when the user is queueing follow-ups).
-    // The rust queue's drain loop will pull this prompt and write it to stdin
-    // as soon as the in-flight prompt's `agent_end` arrives. The pi-event-router
-    // will append the new turn's user + assistant messages to the chat-store.
+    // If Pi is mid-reply, the default composer action is native steering:
+    // the new message should interrupt and redirect the current reply. Queued
+    // follow-up is still available through the clock button.
     if (isLoading || isStreaming) {
-      return enqueuePiMessage(userMessage, displayLabel);
+      return steerMessage(userMessage, displayLabel);
     }
 
     // All providers route through Pi agent
     return sendPiMessage(userMessage, displayLabel);
+  }
+
+  async function queueFollowUpMessage(userMessage: string, displayLabel?: string) {
+    if ((!canChat && !autoSendBypassRef.current) || (!activePreset && !autoSendBypassRef.current)) return;
+    return enqueuePiMessage(userMessage, displayLabel);
   }
 
   function findLocalQueuedMessage(prompt: PiQueuedPrompt): Message | undefined {
@@ -5119,6 +5125,10 @@ export function StandaloneChat({
     if (!trimmed && !hasImages) return;
 
     const hadActiveReply = isLoading || isStreaming || !!piMessageIdRef.current;
+    if (!hadActiveReply || !piInfo?.running) {
+      return sendPiMessage(trimmed, displayLabel, imageDataUrls);
+    }
+
     posthog.capture("chat_message_steered", {
       provider: activePreset?.provider,
       model: activePreset?.model,
@@ -5126,7 +5136,77 @@ export function StandaloneChat({
       from_queue: !!imageDataUrls,
     });
 
-    return sendPiMessage(trimmed, displayLabel, imageDataUrls);
+    const outgoingImages = imageDataUrls ?? pastedImages;
+    const shouldClearPastedImages = imageDataUrls == null && pastedImages.length > 0;
+
+    const newUserMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: trimmed,
+      ...(displayLabel ? { displayContent: displayLabel } : {}),
+      ...(outgoingImages.length > 0 ? { images: [...outgoingImages] } : {}),
+      timestamp: Date.now(),
+    };
+
+    setFollowUpSuggestions([]);
+    followUpFiredRef.current = false;
+    if (followUpAbortRef.current) {
+      followUpAbortRef.current.abort();
+      followUpAbortRef.current = null;
+    }
+    lastUserMessageRef.current = trimmed;
+
+    setMessages((prev) => {
+      const next = [...prev, newUserMessage];
+      void saveConversation(next, {
+        refreshHistory: false,
+        syncActiveConversation: false,
+      });
+      return next;
+    });
+    setInput("");
+    if (inputRef.current) inputRef.current.style.height = "auto";
+
+    const sidNow = piSessionIdRef.current;
+    if (sidNow) {
+      const storeState = useChatStore.getState();
+      if (!storeState.sessions[sidNow]) {
+        storeState.actions.upsert({
+          id: sidNow,
+          title: "new chat",
+          preview: "",
+          status: "streaming",
+          messageCount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          pinned: false,
+          unread: false,
+        });
+      }
+      storeState.actions.appendMessage(sidNow, newUserMessage as any);
+      storeState.actions.patch(sidNow, { lastUserMessageAt: Date.now() });
+    }
+
+    const piImages = imageDataUrlsToPiImages(outgoingImages);
+    if (shouldClearPastedImages) setPastedImages([]);
+
+    try {
+      const result = await commands.piSteer(
+        piSessionIdRef.current,
+        trimmed,
+        piImages.length > 0 ? piImages : null,
+      );
+      if (result.status !== "ok") {
+        toast({ title: "failed to steer message", description: result.error, variant: "destructive" });
+      }
+    } catch (e) {
+      console.warn("[Pi] failed to steer message:", e);
+      toast({
+        title: "failed to steer message",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
   }
 
   async function steerQueuedPrompt(prompt: PiQueuedPrompt) {
@@ -6365,7 +6445,7 @@ export function StandaloneChat({
                                 type="button"
                                 disabled={isBusy}
                                 onClick={() => steerQueuedPrompt(p)}
-                                className="h-7 px-2 rounded-md inline-flex items-center gap-1 text-xs text-foreground bg-muted/70 hover:bg-muted disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                                className="h-7 w-7 rounded-md inline-flex items-center justify-center text-foreground bg-muted/70 hover:bg-muted disabled:opacity-50 disabled:pointer-events-none transition-colors"
                                 aria-label={`steer queued message ${i + 1}`}
                               >
                                 {isBusy ? (
@@ -6373,11 +6453,10 @@ export function StandaloneChat({
                                 ) : (
                                   <CornerDownRight className="h-3 w-3" />
                                 )}
-                                <span>Steer</span>
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="top">
-                              Stop current reply and run this now ({formatSteerShortcut(isMac)})
+                              Steer current reply with this message ({formatSteerShortcut(isMac)})
                             </TooltipContent>
                           </Tooltip>
                           <Tooltip>
@@ -6423,7 +6502,7 @@ export function StandaloneChat({
                   disabledReason
                     ? disabledReason
                     : isLoading || isStreaming
-                      ? "Ask for follow-up changes..."
+                      ? "Steer current reply..."
                       : "Ask about your screen... (type @ for filters, paste images)"
                 }
                 disabled={!canChat}
@@ -6574,35 +6653,36 @@ export function StandaloneChat({
                 <Paperclip className="h-4 w-4" />
               </Button>
               {(() => {
-                // Four button modes:
-                //   1. streaming + input empty → stop (square)
-                //   2. streaming + input has text → queue (chevron-up, submits, enqueues)
-                //   3. streaming + input has text → steer (explicit side button; aborts current turn)
-                //   4. not streaming → send (paper plane)
                 const hasInput = input.trim().length > 0 || pastedImages.length > 0;
-                const isQueueMode = (isLoading || isStreaming) && hasInput;
-                const isStopMode = (isLoading || isStreaming) && !hasInput;
+                const primaryAction = getComposerPrimaryAction(isLoading || isStreaming, hasInput);
+                const isSteerMode = primaryAction === "steer";
+                const isStopMode = primaryAction === "stop";
                 return (
                   <>
-                    {isQueueMode && (
+                    {isSteerMode && (
                       <TooltipProvider delayDuration={150}>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
                               type="button"
-                              size="sm"
+                              size="icon"
                               variant="ghost"
                               disabled={!canChat}
-                              onClick={() => steerMessage(input.trim())}
-                              className="h-8 px-2.5 gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60"
-                              aria-label={`steer current message (${formatSteerShortcut(isMac)})`}
+                              onClick={() => queueFollowUpMessage(input.trim())}
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted/60 relative"
+                              aria-label="queue follow-up after current reply"
+                              title="queue follow-up after current reply"
                             >
-                              <CornerDownRight className="h-3.5 w-3.5" />
-                              <span>Steer</span>
+                              <Clock className="h-3.5 w-3.5" />
+                              {queuedPrompts.length > 0 && (
+                                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] px-1 rounded-full bg-muted text-foreground text-[9px] font-mono font-semibold flex items-center justify-center border border-background">
+                                  {queuedPrompts.length}
+                                </span>
+                              )}
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="top">
-                            Stop current reply and run this now ({formatSteerShortcut(isMac)})
+                            Queue follow-up after current reply
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -6619,22 +6699,24 @@ export function StandaloneChat({
                       title={
                         isStopMode
                           ? "stop"
-                          : isQueueMode
-                            ? `queue with Enter (${queuedPrompts.length + 1} pending)`
+                          : isSteerMode
+                            ? "steer current reply"
                             : "send"
+                      }
+                      aria-label={
+                        isStopMode
+                          ? "stop reply"
+                          : isSteerMode
+                            ? "steer current reply"
+                            : "send message"
                       }
                     >
                       {isStopMode ? (
                         <Square className="h-4 w-4" />
-                      ) : isQueueMode ? (
-                        <ChevronUp className="h-4 w-4" />
+                      ) : isSteerMode ? (
+                        <CornerDownRight className="h-4 w-4" />
                       ) : (
                         <Send className="h-4 w-4" />
-                      )}
-                      {isQueueMode && queuedPrompts.length > 0 && (
-                        <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] px-1 rounded-full bg-foreground text-background text-[9px] font-mono font-semibold flex items-center justify-center border border-background">
-                          {queuedPrompts.length + 1}
-                        </span>
                       )}
                     </Button>
                   </>

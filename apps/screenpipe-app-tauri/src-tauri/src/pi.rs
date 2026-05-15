@@ -1817,6 +1817,47 @@ pub async fn pi_prompt(
         .map_err(|_| "Pi command queue dropped".to_string())?
 }
 
+/// Steer the active Pi reply using Pi's native steering command.
+/// Unlike `pi_prompt`, this is intentionally not added to the follow-up queue:
+/// Pi interrupts the current stream and resumes with the steering instruction.
+#[tauri::command]
+#[specta::specta]
+pub async fn pi_steer(
+    state: State<'_, PiState>,
+    session_id: Option<String>,
+    message: String,
+    images: Option<Vec<PiImageContent>>,
+) -> Result<(), String> {
+    let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    let queue = {
+        let mut pool = state.0.lock().await;
+        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
+        if !m.is_running() {
+            return Err("Pi is not running".to_string());
+        }
+        m.last_activity = std::time::Instant::now();
+        m.queue_handle
+            .clone()
+            .ok_or("Pi command queue not initialized")?
+    };
+
+    let mut cmd = json!({
+        "type": "steer",
+        "message": message,
+    });
+    if let Some(imgs) = images {
+        if !imgs.is_empty() {
+            cmd["images"] = serde_json::to_value(imgs).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let rx = queue
+        .send(cmd, crate::pi_command_queue::WaitMode::WriteOnly)
+        .await?;
+    rx.await
+        .map_err(|_| "Pi command queue dropped".to_string())?
+}
+
 /// Cancel a single queued prompt. Returns true if it was still in the queue
 /// (and is now removed), false if it had already been pulled into the
 /// in-flight slot — at that point `pi_abort` is the right tool.

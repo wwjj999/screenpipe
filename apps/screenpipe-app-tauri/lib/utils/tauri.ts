@@ -887,6 +887,17 @@ async piPrompt(sessionId: string | null, message: string, images: PiImageContent
 }
 },
 /**
+ * Steer the active Pi reply using Pi's native steering command.
+ */
+async piSteer(sessionId: string | null, message: string, images: PiImageContent[] | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pi_steer", { sessionId, message, images }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Read the current queued-prompt list for a session. Useful for an initial
  * render before the first `pi-queue-changed` event arrives, and for new
  * chat windows opening on top of an in-progress queue.

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatSteerShortcut,
+  getComposerPrimaryAction,
   isComposerSteerShortcut,
   isQueuedItemCancelShortcut,
   isQueuedItemSteerShortcut,
@@ -70,5 +71,12 @@ describe("chat queue controls", () => {
   it("formats steer shortcuts without platform-specific glyph assumptions", () => {
     expect(formatSteerShortcut(true)).toBe("Cmd+Enter");
     expect(formatSteerShortcut(false)).toBe("Ctrl+Enter");
+  });
+
+  it("makes the composer steer while Pi is replying and text is present", () => {
+    expect(getComposerPrimaryAction(false, false)).toBe("send");
+    expect(getComposerPrimaryAction(false, true)).toBe("send");
+    expect(getComposerPrimaryAction(true, false)).toBe("stop");
+    expect(getComposerPrimaryAction(true, true)).toBe("steer");
   });
 });
