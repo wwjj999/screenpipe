@@ -670,6 +670,67 @@ mod tests {
         }
     }
 
+    fn test_audio_tap() -> MeetingAudioTap {
+        let (tx, _) = broadcast::channel(8);
+        MeetingAudioTap::new(tx, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+
+    #[tokio::test]
+    async fn live_ready_session_suppresses_background_recording() {
+        let audio_tap = test_audio_tap();
+        let transcription_engine = Arc::new(RwLock::new(None));
+        let mut active = None;
+        let config = MeetingStreamingConfig::from_settings(
+            true,
+            "screenpipe-cloud",
+            Some("cloud-token".to_string()),
+            None,
+            None,
+            None,
+        );
+
+        start_streaming_session(
+            &config,
+            &audio_tap,
+            &transcription_engine,
+            &mut active,
+            7,
+            Some("manual".to_string()),
+            None,
+        )
+        .await;
+
+        let session = active.expect("active live session");
+        assert!(session.live_transcription_enabled);
+        assert!(audio_tap.is_active());
+        assert!(audio_tap.background_suppressed());
+    }
+
+    #[tokio::test]
+    async fn live_not_ready_session_keeps_background_recording_enabled() {
+        let audio_tap = test_audio_tap();
+        let transcription_engine = Arc::new(RwLock::new(None));
+        let mut active = None;
+        let config =
+            MeetingStreamingConfig::from_settings(true, "screenpipe-cloud", None, None, None, None);
+
+        start_streaming_session(
+            &config,
+            &audio_tap,
+            &transcription_engine,
+            &mut active,
+            8,
+            Some("manual".to_string()),
+            None,
+        )
+        .await;
+
+        let session = active.expect("active fallback session");
+        assert!(!session.live_transcription_enabled);
+        assert!(!audio_tap.is_active());
+        assert!(!audio_tap.background_suppressed());
+    }
+
     #[test]
     fn inactive_live_session_requests_auto_end_after_timeout() {
         let now = Instant::now();
