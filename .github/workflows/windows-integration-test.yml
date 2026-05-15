@@ -122,6 +122,17 @@ jobs:
         AWS_LC_SYS_PREBUILT_NASM: "1"
       run: cargo build --release -p screenpipe-engine --bin screenpipe --target x86_64-pc-windows-msvc
 
+    - name: Run Windows live meeting audio regression
+      shell: pwsh
+      timeout-minutes: 10
+      env:
+        RUSTFLAGS: "-C link-arg=/LTCG"
+        ORT_STRATEGY: system
+        ORT_LIB_LOCATION: ${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/onnxruntime-win-x64-1.22.0
+        OPENBLAS_PATH: ${{ github.workspace }}/apps/screenpipe-app-tauri/src-tauri/openblas
+        AWS_LC_SYS_PREBUILT_NASM: "1"
+      run: cargo test --release -p screenpipe-audio --lib windows_live_meeting_audio_tap_e2e --target x86_64-pc-windows-msvc -- --nocapture
+
     - name: Run CLI and generate activity
       shell: pwsh
       run: |

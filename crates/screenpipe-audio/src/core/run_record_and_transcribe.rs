@@ -502,4 +502,91 @@ mod tests {
         assert_eq!(frame.sample_rate, 48_000);
         assert_eq!(frame.samples.as_ref(), &samples);
     }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn windows_live_meeting_audio_tap_e2e_uses_background_recorder_shape() {
+        let sample_rate = 16_000_u32;
+        let chunk_samples = 320_usize;
+        let device = Arc::new(AudioDevice::new(
+            "Windows Mic Array (Simulated)".to_string(),
+            DeviceType::Input,
+        ));
+        let (audio_stream, tx) = AudioStream::from_sender_for_test(device, sample_rate, 4);
+        let audio_stream = Arc::new(audio_stream);
+        let (meeting_tx, _) = broadcast::channel(512);
+        let meeting_tap = MeetingAudioTap::new(meeting_tx, Arc::new(AtomicBool::new(false)));
+        meeting_tap.set_active(true);
+        meeting_tap.set_background_suppressed(true);
+        let mut live_rx = meeting_tap.subscribe();
+
+        let (whisper_tx, whisper_rx) = crossbeam::channel::bounded::<AudioInput>(4);
+        let is_running = Arc::new(AtomicBool::new(true));
+        let metrics = Arc::new(AudioPipelineMetrics::new());
+
+        let pipeline = tokio::spawn({
+            let audio_stream = audio_stream.clone();
+            let whisper_tx = Arc::new(whisper_tx);
+            let is_running = is_running.clone();
+            let metrics = metrics.clone();
+            let meeting_tap = meeting_tap.clone();
+            async move {
+                run_record_and_transcribe(
+                    audio_stream,
+                    Duration::from_secs(1),
+                    whisper_tx,
+                    is_running,
+                    metrics,
+                    Some(meeting_tap),
+                )
+                .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for chunk_index in 0..170 {
+            let chunk = (0..chunk_samples)
+                .map(|sample_index| {
+                    let n = chunk_index * chunk_samples + sample_index;
+                    ((n as f32 / sample_rate as f32) * 440.0 * std::f32::consts::TAU).sin() * 0.2
+                })
+                .collect::<Vec<f32>>();
+            tx.send(chunk).expect("send simulated recorder chunk");
+        }
+
+        let live_frame = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match live_rx.recv().await {
+                    Ok(frame) => break frame,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(error) => panic!("live frame: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("live frame timeout");
+        assert_eq!(live_frame.channels, 1);
+        assert_eq!(live_frame.sample_rate, sample_rate);
+        assert!(!live_frame.samples.is_empty());
+        assert!(meeting_tap.background_suppressed());
+
+        let whisper_rx_for_assert = whisper_rx.clone();
+        let audio_input = tokio::task::spawn_blocking(move || {
+            whisper_rx_for_assert.recv_timeout(Duration::from_secs(2))
+        })
+        .await
+        .expect("background receiver task")
+        .expect("background audio segment");
+        assert_eq!(audio_input.channels, 1);
+        assert_eq!(audio_input.sample_rate, sample_rate);
+        assert!(!audio_input.data.is_empty());
+
+        is_running.store(false, Ordering::Relaxed);
+        tx.send(vec![0.1; chunk_samples]).ok();
+        let pipeline_result = tokio::time::timeout(Duration::from_secs(5), pipeline)
+            .await
+            .expect("pipeline shutdown timeout")
+            .expect("pipeline task");
+        pipeline_result.expect("pipeline result");
+    }
 }
