@@ -121,8 +121,6 @@ enum BrowserSessionDecision {
     ContinueLoggedOut,
 }
 
-const SESSION_ACCESS_STORE_KEY: &str = "owned_browser_session_access";
-
 #[derive(serde::Serialize, Clone)]
 struct BrowserSessionAccessRequestPayload {
     request_id: String,
@@ -133,18 +131,18 @@ struct BrowserSessionAccessRequestPayload {
 static SESSION_ACCESS_PENDING: OnceLock<
     Mutex<HashMap<String, oneshot::Sender<BrowserSessionDecision>>>,
 > = OnceLock::new();
-static SESSION_ACCESS_DECISIONS: OnceLock<Mutex<HashMap<String, BrowserSessionDecision>>> =
-    OnceLock::new();
+/// Hosts the user allowed this app session (`Use browser session`). Cleared on
+/// restart. We never remember "continue logged out" — deny is per navigation.
+static SESSION_ACCESS_ALLOWED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SESSION_ACCESS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static SESSION_ACCESS_HYDRATED: OnceLock<()> = OnceLock::new();
 
 fn pending_session_access(
 ) -> &'static Mutex<HashMap<String, oneshot::Sender<BrowserSessionDecision>>> {
     SESSION_ACCESS_PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn remembered_session_access() -> &'static Mutex<HashMap<String, BrowserSessionDecision>> {
-    SESSION_ACCESS_DECISIONS.get_or_init(|| Mutex::new(HashMap::new()))
+fn session_access_allowed() -> &'static Mutex<HashSet<String>> {
+    SESSION_ACCESS_ALLOWED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 fn session_access_in_flight() -> &'static Mutex<HashSet<String>> {
@@ -160,40 +158,11 @@ fn session_host_key(host: &str) -> String {
         .unwrap_or(lower)
 }
 
-async fn hydrate_remembered_session_access(app: &AppHandle) {
-    if SESSION_ACCESS_HYDRATED.get().is_some() {
-        return;
-    }
-    if let Ok(store) = crate::store::get_store(app, None) {
-        if let Some(raw) = store.get(SESSION_ACCESS_STORE_KEY) {
-            if let Ok(map) =
-                serde_json::from_value::<HashMap<String, BrowserSessionDecision>>(raw)
-            {
-                let mut remembered = remembered_session_access().lock().await;
-                for (host, decision) in map {
-                    remembered.insert(session_host_key(&host), decision);
-                }
-            }
-        }
-    }
-    let _ = SESSION_ACCESS_HYDRATED.set(());
-}
-
-async fn remember_session_access_decision(
-    app: &AppHandle,
-    host: &str,
-    decision: BrowserSessionDecision,
-) {
-    let host_key = session_host_key(host);
-    remembered_session_access()
+async fn remember_session_access_allow(host: &str) {
+    session_access_allowed()
         .lock()
         .await
-        .insert(host_key.clone(), decision);
-    if let Ok(store) = crate::store::get_store(app, None) {
-        let snapshot = remembered_session_access().lock().await.clone();
-        store.set(SESSION_ACCESS_STORE_KEY, serde_json::json!(snapshot));
-        let _ = store.save();
-    }
+        .insert(session_host_key(host));
 }
 
 #[tauri::command]
@@ -867,21 +836,6 @@ async fn inject_cookies_for_url(app: &AppHandle, url: &url::Url) {
     info!(host, "owned-browser cookies: pre-navigate inject starting");
     let cookies = crate::owned_browser_cookies::cookies_for_host(host).await;
     if cookies.is_empty() {
-        let host_key = session_host_key(host);
-        let prior = remembered_session_access()
-            .lock()
-            .await
-            .get(&host_key)
-            .copied();
-        // Never downgrade an explicit "allow" when Keychain/sqlite returns nothing.
-        if prior != Some(BrowserSessionDecision::UseBrowserSession) {
-            remember_session_access_decision(
-                app,
-                host,
-                BrowserSessionDecision::ContinueLoggedOut,
-            )
-            .await;
-        }
         info!(
             host,
             "owned-browser cookies: 0 cookies available — navigating without inject \
@@ -913,8 +867,7 @@ async fn browser_session_decision_for_url(
     app: &AppHandle,
     url: &url::Url,
 ) -> BrowserSessionDecision {
-    hydrate_remembered_session_access(app).await;
-
+    let _ = app;
     let Some(host) = url.host_str() else {
         return BrowserSessionDecision::ContinueLoggedOut;
     };
@@ -924,25 +877,15 @@ async fn browser_session_decision_for_url(
         return BrowserSessionDecision::ContinueLoggedOut;
     }
 
-    if let Some(decision) = remembered_session_access()
-        .lock()
-        .await
-        .get(&host_key)
-        .copied()
-    {
-        return decision;
+    if session_access_allowed().lock().await.contains(&host_key) {
+        return BrowserSessionDecision::UseBrowserSession;
     }
 
     // Agent may navigate the same host repeatedly while the first prompt is open.
     let wait_deadline = Instant::now() + SESSION_ACCESS_TIMEOUT;
     loop {
-        if let Some(decision) = remembered_session_access()
-            .lock()
-            .await
-            .get(&host_key)
-            .copied()
-        {
-            return decision;
+        if session_access_allowed().lock().await.contains(&host_key) {
+            return BrowserSessionDecision::UseBrowserSession;
         }
         let in_flight = session_access_in_flight().lock().await;
         if !in_flight.contains(&host_key) {
@@ -1002,7 +945,9 @@ async fn browser_session_decision_for_url(
     };
 
     session_access_in_flight().lock().await.remove(&host_key);
-    remember_session_access_decision(app, &host_key, decision).await;
+    if decision == BrowserSessionDecision::UseBrowserSession {
+        remember_session_access_allow(&host_key).await;
+    }
     decision
 }
 
