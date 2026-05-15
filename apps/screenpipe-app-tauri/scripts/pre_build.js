@@ -284,6 +284,15 @@ async function linkSystemBinary(binaryName, destination) {
 	}
 }
 
+async function copySystemBinary(binaryName, destination) {
+	const source = await findOnPath(binaryName);
+	if (!source) {
+		throw new Error(`CI expected ${binaryName} on PATH, but command lookup failed`);
+	}
+	await copyFile(source, destination);
+	console.log(`using system ${binaryName}: ${source} -> ${destination}`);
+}
+
 async function findOnPath(binaryName) {
 	const pathValue = process.env.PATH || '';
 	for (const dir of pathValue.split(path.delimiter)) {
@@ -537,39 +546,51 @@ if (platform == 'windows') {
 
 /* ########## macOS ########## */
 if (platform == 'macos') {
-  // Setup ffmpeg and ffprobe for both arm64 and x86_64
-  // ref: https://github.com/nathanbabcock/ffmpeg-sidecar/blob/b0ab2e1233451f219e302bf78cbbb6a5a8e85aa4/src/download.rs#L31
-  if (!(await fs.exists(`ffmpeg-aarch64-apple-darwin`))) {
-    await $`wget --no-config ${config.macos.ffmpegUrlArm} -O ffmpeg-aarch64.zip`;
-    await $`unzip -o ffmpeg-aarch64.zip -d ffmpeg-aarch64`;
-    await $`cp ffmpeg-aarch64/ffmpeg ffmpeg-aarch64-apple-darwin`;
-    await $`rm ffmpeg-aarch64.zip`;
-    await $`rm -rf ffmpeg-aarch64`;
-  }
+	const inCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+	const releaseTarget = process.env.SCREENPIPE_RELEASE_TARGET;
 
-  if (!(await fs.exists(`ffprobe-aarch64-apple-darwin`))) {
-    await $`wget --no-config ${config.macos.ffprobeUrlArm} -O ffprobe-aarch64.zip`;
-    await $`unzip -o ffprobe-aarch64.zip -d ffprobe-aarch64`;
-    await $`cp ffprobe-aarch64/ffprobe ffprobe-aarch64-apple-darwin`;
-    await $`rm ffprobe-aarch64.zip`;
-    await $`rm -rf ffprobe-aarch64`;
-  }
+	if (inCI && releaseTarget) {
+		if (!(await fs.exists(`ffmpeg-${releaseTarget}`))) {
+			await copySystemBinary('ffmpeg', `ffmpeg-${releaseTarget}`);
+		}
+		if (!(await fs.exists(`ffprobe-${releaseTarget}`))) {
+			await copySystemBinary('ffprobe', `ffprobe-${releaseTarget}`);
+		}
+	} else {
+		// Setup ffmpeg and ffprobe for both arm64 and x86_64
+		// ref: https://github.com/nathanbabcock/ffmpeg-sidecar/blob/b0ab2e1233451f219e302bf78cbbb6a5a8e85aa4/src/download.rs#L31
+		if (!(await fs.exists(`ffmpeg-aarch64-apple-darwin`))) {
+			await $`wget --no-config ${config.macos.ffmpegUrlArm} -O ffmpeg-aarch64.zip`;
+			await $`unzip -o ffmpeg-aarch64.zip -d ffmpeg-aarch64`;
+			await $`cp ffmpeg-aarch64/ffmpeg ffmpeg-aarch64-apple-darwin`;
+			await $`rm ffmpeg-aarch64.zip`;
+			await $`rm -rf ffmpeg-aarch64`;
+		}
 
-  if (!(await fs.exists(`ffmpeg-x86_64-apple-darwin`))) {
-    await $`wget --no-config ${config.macos.ffmpegUrlx86_64} -O ffmpeg-x86_64.zip`;
-    await $`unzip -o ffmpeg-x86_64.zip -d ffmpeg-x86_64`;
-    await $`cp ffmpeg-x86_64/ffmpeg ffmpeg-x86_64-apple-darwin`;
-    await $`rm ffmpeg-x86_64.zip`;
-    await $`rm -rf ffmpeg-x86_64`;
-  }
+		if (!(await fs.exists(`ffprobe-aarch64-apple-darwin`))) {
+			await $`wget --no-config ${config.macos.ffprobeUrlArm} -O ffprobe-aarch64.zip`;
+			await $`unzip -o ffprobe-aarch64.zip -d ffprobe-aarch64`;
+			await $`cp ffprobe-aarch64/ffprobe ffprobe-aarch64-apple-darwin`;
+			await $`rm ffprobe-aarch64.zip`;
+			await $`rm -rf ffprobe-aarch64`;
+		}
 
-  if (!(await fs.exists(`ffprobe-x86_64-apple-darwin`))) {
-    await $`wget --no-config ${config.macos.ffprobeUrlx86_64} -O ffprobe-x86_64.zip`;
-    await $`unzip -o ffprobe-x86_64.zip -d ffprobe-x86_64`;
-    await $`cp ffprobe-x86_64/ffprobe ffprobe-x86_64-apple-darwin`;
-    await $`rm ffprobe-x86_64.zip`;
-    await $`rm -rf ffprobe-x86_64`;
-  }
+		if (!(await fs.exists(`ffmpeg-x86_64-apple-darwin`))) {
+			await $`wget --no-config ${config.macos.ffmpegUrlx86_64} -O ffmpeg-x86_64.zip`;
+			await $`unzip -o ffmpeg-x86_64.zip -d ffmpeg-x86_64`;
+			await $`cp ffmpeg-x86_64/ffmpeg ffmpeg-x86_64-apple-darwin`;
+			await $`rm ffmpeg-x86_64.zip`;
+			await $`rm -rf ffmpeg-x86_64`;
+		}
+
+		if (!(await fs.exists(`ffprobe-x86_64-apple-darwin`))) {
+			await $`wget --no-config ${config.macos.ffprobeUrlx86_64} -O ffprobe-x86_64.zip`;
+			await $`unzip -o ffprobe-x86_64.zip -d ffprobe-x86_64`;
+			await $`cp ffprobe-x86_64/ffprobe ffprobe-x86_64-apple-darwin`;
+			await $`rm ffprobe-x86_64.zip`;
+			await $`rm -rf ffprobe-x86_64`;
+		}
+	}
 
   console.log('FFMPEG and FFPROBE checks completed');
 	console.log('Moved and renamed ffmpeg binary for externalBin');
