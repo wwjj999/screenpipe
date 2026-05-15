@@ -26,6 +26,8 @@ import {
   waitForLocalApi,
 } from "../helpers/api-utils.js";
 
+type LocalApiConfig = Awaited<ReturnType<typeof getLocalApiConfig>>;
+
 type HasGetAttribute = {
   getAttribute: (name: string) => Promise<string | null>;
 };
@@ -88,19 +90,39 @@ async function clickApplyRestart(): Promise<void> {
   await first.click();
 }
 
-async function waitForAuthEnabled(expected: boolean, timeoutMs = t(60_000)): Promise<number> {
+async function waitForAuthEnabled(
+  expected: boolean,
+  timeoutMs = t(60_000),
+): Promise<LocalApiConfig> {
   const deadline = Date.now() + timeoutMs;
   let lastAuth = "unknown";
+  let lastConnections = "unknown";
   while (Date.now() < deadline) {
     const cfg = await getLocalApiConfig().catch(() => null);
     if (cfg) {
       lastAuth = String(cfg.auth_enabled);
       const res = await fetchJson(`http://127.0.0.1:${cfg.port}/health`);
-      if (res.ok && cfg.auth_enabled === expected) return cfg.port;
+      if (res.ok && cfg.auth_enabled === expected) {
+        const url = `http://127.0.0.1:${cfg.port}/connections`;
+        const unauthed = await fetchJson(url);
+        if (expected) {
+          const authed = cfg.key ? await fetchJson(url, authHeaders(cfg.key)) : null;
+          const rejectsUnauthed =
+            !unauthed.ok && unauthed.status >= 400 && unauthed.status < 500;
+          const acceptsAuthed = !authed || authed.ok;
+          if (rejectsUnauthed && acceptsAuthed) return cfg;
+          lastConnections = `unauthed=${unauthed.status} authed=${authed?.status ?? "no-key"}`;
+        } else {
+          if (unauthed.ok) return cfg;
+          lastConnections = `unauthed=${unauthed.status}`;
+        }
+      }
     }
     await browser.pause(500);
   }
-  throw new Error(`Timed out waiting for auth_enabled=${expected} (last=${lastAuth})`);
+  throw new Error(
+    `Timed out waiting for auth_enabled=${expected} (last=${lastAuth}, connections=${lastConnections})`,
+  );
 }
 
 async function expectConnectionsAuthBehavior(port: number, key: string | null, authEnabled: boolean) {
@@ -176,9 +198,9 @@ describe("Privacy: API auth enforcement", function () {
     }
 
     await clickApplyRestart();
-    const port = await waitForAuthEnabled(flipped, t(90_000));
+    const updated = await waitForAuthEnabled(flipped, t(90_000));
+    const port = updated.port;
 
-    const updated = await getLocalApiConfig();
     expect(updated.auth_enabled).toBe(flipped);
     expect(updated.port).toBe(port);
 

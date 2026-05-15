@@ -744,6 +744,8 @@ async fn main() {
                 commands::update_show_screenpipe_shortcut,
                 commands::show_window,
                 commands::show_window_activated,
+                commands::show_main_window,
+                commands::hide_main_window,
                 commands::open_login_window,
                 commands::open_google_calendar_auth_window,
                 commands::ensure_webview_focus,
@@ -955,7 +957,7 @@ async fn main() {
         let args_clone = args.clone();
         let _ = app.run_on_main_thread(move || {
             // Focus the existing window
-            show_main_window(&app_for_closure, false);
+            show_main_window(app_for_closure.clone());
 
             // Forward deep-link URL from args
             if let Some(url) = args_clone.iter().find(|a| a.starts_with("screenpipe://")) {
@@ -1034,6 +1036,8 @@ async fn main() {
             commands::open_pipe_window,
             commands::show_window,
             commands::show_window_activated,
+            commands::show_main_window,
+            commands::hide_main_window,
             commands::open_login_window,
             commands::ensure_webview_focus,
             commands::close_window,

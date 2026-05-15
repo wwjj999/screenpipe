@@ -730,12 +730,12 @@ pub fn set_tray_health_icon(app_handle: tauri::AppHandle) {
 
 #[tauri::command]
 #[specta::specta]
-pub fn show_main_window(app_handle: &tauri::AppHandle, _overlay: bool) {
+pub fn show_main_window(app_handle: tauri::AppHandle) {
     info!("show_main_window called");
     set_main_close_in_progress(false);
     let window_to_show = ShowRewindWindow::Main;
 
-    match window_to_show.show(app_handle) {
+    match window_to_show.show(&app_handle) {
         Ok(window) => {
             info!(
                 "show_main_window succeeded, window label: {}",
@@ -778,14 +778,14 @@ pub fn show_main_window(app_handle: &tauri::AppHandle, _overlay: bool) {
 
 #[tauri::command]
 #[specta::specta]
-pub fn hide_main_window(app_handle: &tauri::AppHandle) {
+pub fn hide_main_window(app_handle: tauri::AppHandle) {
     // NOTE: Window shortcuts (Escape) are unregistered by the focus-loss
     // handler in window/show.rs. Do NOT also unregister them here — doing
     // so races with the focus handler and causes duplicate unregister calls.
 
     let window_to_close = ShowRewindWindow::Main;
 
-    if let Err(e) = window_to_close.close(app_handle) {
+    if let Err(e) = window_to_close.close(&app_handle) {
         error!("failed to close window: {}", e);
     }
 }
@@ -924,20 +924,20 @@ pub fn update_show_screenpipe_shortcut(
                 // the panel's alpha is 0 (auto-hidden on focus loss), causing
                 // the shortcut to "hide" an already-invisible panel.
                 if MAIN_PANEL_SHOWN.load(std::sync::atomic::Ordering::SeqCst) {
-                    hide_main_window(app_handle);
+                    hide_main_window(app_handle.clone());
                 } else {
-                    show_main_window(app_handle, true);
+                    show_main_window(app_handle.clone());
                 }
             }
             #[cfg(not(target_os = "macos"))]
             {
                 if let Some(window) = app_handle.get_webview_window("home") {
                     match window.is_visible() {
-                        Ok(true) => hide_main_window(app_handle),
-                        _ => show_main_window(app_handle, true),
+                        Ok(true) => hide_main_window(app_handle.clone()),
+                        _ => show_main_window(app_handle.clone()),
                     }
                 } else {
-                    show_main_window(app_handle, true);
+                    show_main_window(app_handle.clone());
                 }
             }
         },
@@ -949,7 +949,7 @@ pub fn update_show_screenpipe_shortcut(
             let _ = app_handle.global_shortcut().on_shortcut(
                 default_shortcut,
                 move |app_handle, _event, _shortcut| {
-                    show_main_window(app_handle, true);
+                    show_main_window(app_handle.clone());
                 },
             );
         }
@@ -1227,7 +1227,7 @@ pub async fn show_window(
 
     // Hide Main timeline when opening Search (search is standalone, timeline shows on result pick)
     if matches!(window_id, RewindWindowId::Search) {
-        hide_main_window(&app_handle);
+        hide_main_window(app_handle.clone());
     }
 
     window.show(&app_handle).map_err(|e| e.to_string())?;
