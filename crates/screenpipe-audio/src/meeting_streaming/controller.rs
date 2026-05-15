@@ -101,7 +101,10 @@ pub fn start_meeting_streaming_loop(
             }
             Ok(None) => {}
             Err(err) => {
-                warn!("meeting streaming: failed to check active meeting on start: {}", err);
+                warn!(
+                    "meeting streaming: failed to check active meeting on start: {}",
+                    err
+                );
             }
         }
 
@@ -282,7 +285,13 @@ async fn start_streaming_session(
         meeting_id, provider, live_transcription_enabled
     );
     if let Some(error) = readiness_error.clone() {
-        emit_error(meeting_id, &provider, config.model.clone(), None, error.clone());
+        emit_error(
+            meeting_id,
+            &provider,
+            config.model.clone(),
+            None,
+            error.clone(),
+        );
     }
     emit_status(
         true,
