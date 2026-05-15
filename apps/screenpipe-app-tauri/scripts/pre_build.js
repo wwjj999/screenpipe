@@ -160,8 +160,18 @@ async function copyBunBinary() {
 			return;
 		}
 
+		if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
+			const systemBun = await findOnPath('bun');
+			if (!systemBun) {
+				throw new Error('CI expected bun on PATH, but command lookup failed');
+			}
+			console.log(`using CI bun binary for tauri sidecar: ${systemBun}`);
+			await copyFile(systemBun, bunDest1);
+			return;
+		}
+
 		// Download the baseline bun variant for broader glibc compatibility.
-		// Use npm's tarball mirror because GitHub release assets can 504 in CI.
+		// Use npm's tarball mirror because GitHub release assets can 504.
 		const bunVersion = '1.3.10';
 		const baselineUrl = `https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-${bunVersion}.tgz`;
 		console.log(`downloading bun baseline v${bunVersion} for linux...`);
