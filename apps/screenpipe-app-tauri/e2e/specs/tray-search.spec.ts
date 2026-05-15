@@ -131,10 +131,20 @@ describe("Tray: Search window", function () {
     const input = await $('input[placeholder*="search memory"]');
     await input.waitForExist({ timeout: t(20_000) });
     await waitForSearchInputFocus(t(20_000));
-    await browser.waitUntil(async () => (await input.getValue()).includes("tray-e2e"), {
-      timeout: t(15_000),
-      interval: 250,
-      timeoutMsg: "Search input did not seed from the ?q= tray query",
-    });
+    await browser.waitUntil(
+      async () => {
+        try {
+          const currentInput = await $('input[placeholder*="search memory"]');
+          return (await currentInput.getValue()).includes("tray-e2e");
+        } catch {
+          return false;
+        }
+      },
+      {
+        timeout: t(15_000),
+        interval: 250,
+        timeoutMsg: "Search input did not seed from the ?q= tray query",
+      },
+    );
   });
 });
