@@ -162,6 +162,14 @@ describe("Privacy: API auth enforcement", function () {
   let initialPort = 3030;
   let key: string | null = null;
 
+  before(function () {
+    // Apply & Restart can invalidate the Windows WebDriver session; macOS/Linux
+    // still exercise the end-to-end backend enforcement path.
+    if (process.platform === "win32") {
+      this.skip();
+    }
+  });
+
   before(async () => {
     await waitForAppReady();
     await openPrivacySettings();
