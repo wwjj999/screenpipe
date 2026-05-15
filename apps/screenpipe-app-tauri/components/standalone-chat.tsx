@@ -1637,6 +1637,7 @@ function ChatTitleMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1700,7 +1701,10 @@ function ChatTitleMenu({
   };
   const handleDelete = async () => {
     setOpen(false);
-    if (!confirm("Delete this chat? This cannot be undone.")) return;
+    setConfirmingDelete(true);
+  };
+  const confirmDelete = async () => {
+    setConfirmingDelete(false);
     try {
       await deleteConversation(conversationId);
       useChatStore.getState().actions.drop(conversationId);
@@ -1780,6 +1784,24 @@ function ChatTitleMenu({
           Delete
         </button>
       </PopoverContent>
+      <Dialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>delete chat</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Delete this chat? This cannot be undone.
+            </p>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmingDelete(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void confirmDelete()}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Popover>
   );
 }
@@ -2012,6 +2034,8 @@ export function StandaloneChat({
   const piLastErrorRef = useRef<string | null>(null);
   const piStartInFlightRef = useRef(false);
   const piFirstCallRetried = useRef(false);
+  const sessionActivityLastEmitAtRef = useRef<Record<string, number>>({});
+  const sessionActivityLastSigRef = useRef<Record<string, string>>({});
   const piStoppedIntentionallyRef = useRef(false);
   const piIntentionallyStoppedPidsRef = useRef<Set<number>>(new Set());
   const piPresetSwitchPromiseRef = useRef<Promise<void> | null>(null);
@@ -3469,6 +3493,47 @@ export function StandaloneChat({
     };
 
     const handlePiEventData = (data: any) => {
+        const emitSessionActivity = (
+          partial: {
+            status?: ReturnType<typeof statusForEvent>;
+            preview?: string;
+            title?: string;
+            lastError?: string;
+            unreadHint?: boolean;
+          },
+          opts?: { throttleMs?: number },
+        ) => {
+          try {
+            const sid = piSessionIdRef.current;
+            if (!sid) return;
+            const status = partial.status ?? null;
+            const preview = partial.preview?.replace(/\s+/g, " ").trim();
+            const title = partial.title?.trim();
+            const lastError = partial.lastError;
+            const unreadHint = partial.unreadHint === true;
+            const updatedAt = Date.now();
+            const sig = `${status ?? ""}|${preview ?? ""}|${title ?? ""}|${lastError ?? ""}|${unreadHint ? "1" : "0"}`;
+            const lastSig = sessionActivityLastSigRef.current[sid];
+            const throttleMs = opts?.throttleMs ?? 0;
+            const lastAt = sessionActivityLastEmitAtRef.current[sid] ?? 0;
+            if (sig === lastSig && throttleMs > 0 && updatedAt - lastAt < throttleMs) return;
+            if (sig === lastSig && throttleMs === 0) return;
+            if (throttleMs > 0 && updatedAt - lastAt < throttleMs && !status && !lastError) return;
+            sessionActivityLastSigRef.current[sid] = sig;
+            sessionActivityLastEmitAtRef.current[sid] = updatedAt;
+            void emit("chat-session-activity", {
+              id: sid,
+              status: status ?? undefined,
+              preview: preview || undefined,
+              title: title || undefined,
+              updatedAt,
+              lastError,
+              unreadHint,
+            });
+          } catch {
+            // best effort only
+          }
+        };
 
         // Mirror status into the chat-store so the sidebar dot reflects what
         // Pi is actually doing. The bus routes foreground events exclusively
@@ -3487,6 +3552,11 @@ export function StandaloneChat({
             if (cur !== next) {
               store.actions.patch(sid, { status: next });
             }
+            emitSessionActivity({
+              status: next,
+              title: useChatStore.getState().sessions[sid]?.title,
+              lastError: next === "error" ? (piLastErrorRef.current ?? undefined) : undefined,
+            });
           }
         } catch {
           /* defensive — never let a status-mirror failure break the
@@ -3516,6 +3586,11 @@ export function StandaloneChat({
             // First delta of a queued turn → create the placeholder lazily.
             if (!ensureAssistantPlaceholder()) return;
             piStreamingTextRef.current += evt.delta;
+            emitSessionActivity({
+              status: "streaming",
+              preview: evt.delta,
+              unreadHint: true,
+            }, { throttleMs: 250 });
 
             // Append to last text block or create new one
             const blocks = piContentBlocksRef.current;
@@ -3620,6 +3695,7 @@ export function StandaloneChat({
           const errorStr = data.finalError || "Request failed after retries";
           console.error("[Pi] Auto-retry failed:", errorStr);
           piLastErrorRef.current = errorStr;
+          emitSessionActivity({ status: "error", lastError: errorStr });
 
           // Detect rate limit or daily limit from the error
           const quotaErrorType = classifyQuotaError(errorStr);
@@ -3651,6 +3727,7 @@ export function StandaloneChat({
           const reason = data.assistantMessageEvent.reason || "";
           const errorDetail = data.assistantMessageEvent.error || "";
           console.error("[Pi] Message error:", reason, errorDetail);
+          emitSessionActivity({ status: "error", lastError: `${reason} ${errorDetail}`.trim() || undefined });
 
           if (piMessageIdRef.current) {
             const msgId = piMessageIdRef.current;
@@ -3749,6 +3826,7 @@ export function StandaloneChat({
           const errMsg = data.message.errorMessage || data.message.error || "Unknown error";
           console.error("[Pi] LLM error via", data.type, ":", errMsg);
           piLastErrorRef.current = errMsg;
+          emitSessionActivity({ status: "error", lastError: errMsg });
 
           if (piMessageIdRef.current) {
             const msgId = piMessageIdRef.current;
@@ -3906,9 +3984,11 @@ export function StandaloneChat({
             followUpFiredRef.current = false;
             setIsLoading(false);
             setIsStreaming(false);
+            emitSessionActivity({ status: "idle" });
           }
         } else if (data.type === "response" && data.success === false) {
           const errorStr = data.error || "Unknown error";
+          emitSessionActivity({ status: "error", lastError: errorStr });
           // Pi agent first-call bug (pi-mono#2461) — first RPC prompt crashes.
           // Auto-retry the same prompt once. The second call works.
           if (errorStr.includes("startsWith") || errorStr.includes("text.startsWith")) {
