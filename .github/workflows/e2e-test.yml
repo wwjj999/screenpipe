@@ -23,6 +23,7 @@ jobs:
   windows-e2e-test:
     name: Windows E2E Tests
     runs-on: windows-2022
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@v4
 
@@ -511,6 +512,7 @@ jobs:
   macos-e2e-test:
     name: macOS E2E Tests
     runs-on: macos-latest
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@v4
 
