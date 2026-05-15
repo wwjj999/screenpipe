@@ -26,6 +26,8 @@ import {
   waitForLocalApi,
 } from "../helpers/api-utils.js";
 
+const restartSmokeEnabled = process.env.SCREENPIPE_E2E_RESTART_SMOKE === "1";
+
 type LocalApiConfig = Awaited<ReturnType<typeof getLocalApiConfig>>;
 
 type HasGetAttribute = {
@@ -163,9 +165,9 @@ describe("Privacy: API auth enforcement", function () {
   let key: string | null = null;
 
   before(function () {
-    // Apply & Restart can invalidate desktop WebDriver sessions while the
-    // backend is cycling; Linux keeps the end-to-end enforcement coverage in CI.
-    if (process.platform !== "linux") {
+    // Apply & Restart mutates persisted auth config and cycles the backend.
+    // Keep this smoke opt-in until it runs in an isolated E2E job.
+    if (!restartSmokeEnabled) {
       this.skip();
     }
   });
