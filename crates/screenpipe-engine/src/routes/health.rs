@@ -5,7 +5,7 @@
 use axum::{extract::State, http::StatusCode, response::Json as JsonResponse};
 use oasgen::{oasgen, OaSchema};
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,9 +24,16 @@ use crate::ui_recorder::{tree_walker_snapshot, TreeWalkerSnapshot};
 /// times per second. The response only changes meaningfully every ~1s.
 static HEALTH_CACHE: std::sync::LazyLock<RwLock<(u64, Option<HealthCheckResponse>)>> =
     std::sync::LazyLock::new(|| RwLock::new((0, None)));
+type AudioReconciliationBacklogCache = (i64, Option<(u64, Option<DateTime<Utc>>)>);
+static AUDIO_RECONCILIATION_BACKLOG_CACHE: std::sync::LazyLock<
+    RwLock<AudioReconciliationBacklogCache>,
+> = std::sync::LazyLock::new(|| RwLock::new((0, None)));
 
 /// Minimum interval between full health recomputations (in seconds).
 const HEALTH_CACHE_TTL_SECS: u64 = 1;
+const AUDIO_RECONCILIATION_LOOKBACK_HOURS: i64 = 24 * 7;
+const AUDIO_RECONCILIATION_FRESHNESS_DELAY_SECS: i64 = 10 * 60;
+const AUDIO_RECONCILIATION_BACKLOG_CACHE_TTL_SECS: i64 = 30;
 
 /// Describe the most likely cause of a DB-write stall from pool stats.
 /// Old message always said "pool exhaustion likely" which was wrong when the
@@ -164,6 +171,10 @@ pub struct AudioPipelineHealthInfo {
     pub segments_batch_processed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_paused_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_transcription_segments: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_transcription_at: Option<chrono::DateTime<Utc>>,
     // Meeting detection fields (smart mode)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meeting_detected: Option<bool>,
@@ -199,6 +210,42 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> JsonResponse<He
     }
 
     JsonResponse(response)
+}
+
+async fn get_audio_reconciliation_backlog(
+    state: &Arc<AppState>,
+    now: DateTime<Utc>,
+) -> Option<(u64, Option<DateTime<Utc>>)> {
+    {
+        let cache = AUDIO_RECONCILIATION_BACKLOG_CACHE.read().await;
+        if now.timestamp().saturating_sub(cache.0) < AUDIO_RECONCILIATION_BACKLOG_CACHE_TTL_SECS {
+            return cache.1.clone();
+        }
+    }
+
+    let since = now - chrono::Duration::hours(AUDIO_RECONCILIATION_LOOKBACK_HOURS);
+    let older_than = now - chrono::Duration::seconds(AUDIO_RECONCILIATION_FRESHNESS_DELAY_SECS);
+    let result = match state
+        .db
+        .get_reconciliation_backlog_summary(since, older_than)
+        .await
+    {
+        Ok((count, oldest)) => Some((count.max(0) as u64, oldest)),
+        Err(err) => {
+            warn!(
+                "health_check: failed to query audio transcription backlog: {}",
+                err
+            );
+            None
+        }
+    };
+
+    {
+        let mut cache = AUDIO_RECONCILIATION_BACKLOG_CACHE.write().await;
+        *cache = (now.timestamp(), result.clone());
+    }
+
+    result
 }
 
 async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
@@ -266,11 +313,22 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
     } else {
         None
     };
-
     let last_audio_ts = audio_snap.last_db_write_ts;
 
     let now = Utc::now();
     let now_ts = now.timestamp() as u64;
+    let audio_reconciliation_backlog = if !state.audio_disabled {
+        get_audio_reconciliation_backlog(state, now).await
+    } else {
+        None
+    };
+    let pending_transcription_segments = audio_reconciliation_backlog
+        .as_ref()
+        .map(|(count, _)| *count)
+        .filter(|count| *count > 0);
+    let oldest_pending_transcription_at =
+        audio_reconciliation_backlog.and_then(|(_, oldest)| oldest);
+
     // 60 seconds — tight enough to detect real stalls, loose enough to
     // tolerate adaptive FPS (0.1-0.5 fps) and brief DB contention spikes.
     let threshold_secs = 60u64;
@@ -725,6 +783,8 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
                     None
                 },
                 batch_paused_reason: None, // populated by idle detector if available
+                pending_transcription_segments,
+                oldest_pending_transcription_at,
                 meeting_detected,
                 meeting_app,
             })
