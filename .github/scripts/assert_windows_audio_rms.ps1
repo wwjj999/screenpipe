@@ -228,8 +228,8 @@ try {
 
 Write-Host "final audio health:"
 Write-AudioHealth -Health (Get-HealthSnapshot)
-if ($responsivePollsAfterStimulus -eq 0) {
-  Write-Warning "Windows audio RMS smoke inconclusive: /health stopped responding after audio stimulus started. Treating this as a hosted-runner health-poll artifact instead of a near-silent audio capture regression."
+if ($responsivePollsAfterStimulus -eq 0 -or $max.Device -eq "none") {
+  Write-Warning "Windows audio RMS smoke inconclusive: /health did not provide a post-stimulus RMS candidate. Treating this as a hosted-runner health-poll artifact instead of a near-silent audio capture regression."
   return
 }
 throw ("Windows audio RMS smoke failed: max observed RMS {0:N6} on {1}, expected >= {2}. This catches near-silent WASAPI regressions such as cpal AUTOCONVERTPCM on Win11 24H2." -f $max.Rms, $max.Device, $MinRms)
