@@ -78,10 +78,25 @@ const INPUT_SILENT_BUFFER_TIMEOUT_SECS: u64 = 30;
 /// CoreAudio zero-fill produces exact 0.0; any real input source — even
 /// a muted-by-hand AirPods mic — sits well above this floor.
 const SILENT_BUFFER_PEAK_THRESHOLD: f32 = 1e-6;
+const RECORDER_OUTPUT_CHANNELS: u16 = 1;
 
 #[inline]
 fn is_silent_buffer(chunk: &[f32]) -> bool {
     !chunk.is_empty() && chunk.iter().all(|s| s.abs() < SILENT_BUFFER_PEAK_THRESHOLD)
+}
+
+fn meeting_frame_from_recorder_output(
+    samples: Vec<f32>,
+    audio_stream: &AudioStream,
+    captured_at_unix_ms: u64,
+) -> MeetingAudioFrame {
+    MeetingAudioFrame::new(
+        Arc::new(samples),
+        &audio_stream.device,
+        audio_stream.device_config.sample_rate().0,
+        RECORDER_OUTPUT_CHANNELS,
+        captured_at_unix_ms,
+    )
 }
 
 /// Recording always uses 30s segments. Both batch and realtime modes record identically.
@@ -205,11 +220,9 @@ pub async fn run_record_and_transcribe(
                     let drained = source_buffer.drain_all();
                     if let Some(tap) = live_audio_tap.as_ref() {
                         if tap.is_active() && !drained.is_empty() {
-                            let frame = MeetingAudioFrame::new(
-                                Arc::new(drained.clone()),
-                                &audio_stream.device,
-                                audio_stream.device_config.sample_rate().0,
-                                audio_stream.device_config.channels(),
+                            let frame = meeting_frame_from_recorder_output(
+                                drained.clone(),
+                                &audio_stream,
                                 now_epoch_millis(),
                             );
                             tap.send(frame);
@@ -442,7 +455,7 @@ async fn flush_audio(
             data: Arc::new(send_data),
             device: audio_stream.device.clone(),
             sample_rate: audio_stream.device_config.sample_rate().0,
-            channels: audio_stream.device_config.channels(),
+            channels: RECORDER_OUTPUT_CHANNELS,
             capture_timestamp,
         },
         Duration::from_secs(30),
@@ -466,4 +479,27 @@ async fn flush_audio(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::device::AudioDevice;
+
+    #[test]
+    fn live_tap_marks_recorder_mono_output_as_mono() {
+        let device = Arc::new(AudioDevice::new(
+            "Windows Mic Array".to_string(),
+            DeviceType::Input,
+        ));
+        let (audio_stream, _tx) = AudioStream::from_sender_for_test(device, 48_000, 4);
+        let samples = vec![0.1, -0.2, 0.3, -0.4];
+
+        let frame = meeting_frame_from_recorder_output(samples.clone(), &audio_stream, 1234);
+
+        assert_eq!(frame.channels, RECORDER_OUTPUT_CHANNELS);
+        assert_eq!(frame.channels, 1);
+        assert_eq!(frame.sample_rate, 48_000);
+        assert_eq!(frame.samples.as_ref(), &samples);
+    }
 }

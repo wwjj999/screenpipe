@@ -148,6 +148,55 @@ impl FromStr for MeetingStreamingProvider {
 }
 
 impl MeetingStreamingConfig {
+    pub fn with_provider(mut self, provider: MeetingStreamingProvider) -> Self {
+        self.provider = provider;
+        match self.provider {
+            MeetingStreamingProvider::SelectedEngine => {
+                self.api_key = None;
+                self.endpoint = String::new();
+                self.model = Some("selected transcription engine".to_string());
+            }
+            MeetingStreamingProvider::ScreenpipeCloud => {
+                self.api_key = None;
+                self.endpoint = endpoint_from_env(
+                    &["SCREENPIPE_MEETING_REALTIME_URL"],
+                    SCREENPIPE_CLOUD_REALTIME_URL,
+                    SCREENPIPE_CLOUD_REALTIME_PATH,
+                );
+                self.model = Some(
+                    env_non_empty("SCREENPIPE_MEETING_TRANSCRIPTION_MODEL")
+                        .unwrap_or_else(|| "nova-3".to_string()),
+                );
+            }
+            MeetingStreamingProvider::DeepgramLive => {
+                self.api_key = provider_api_key(&self.provider);
+                self.endpoint = endpoint_from_env(
+                    &["SCREENPIPE_MEETING_DEEPGRAM_LIVE_URL"],
+                    DEEPGRAM_LIVE_URL,
+                    DEEPGRAM_LIVE_PATH,
+                );
+                self.model = Some(
+                    env_non_empty("SCREENPIPE_MEETING_TRANSCRIPTION_MODEL")
+                        .unwrap_or_else(|| "nova-3".to_string()),
+                );
+            }
+            MeetingStreamingProvider::OpenAiRealtime => {
+                self.api_key = provider_api_key(&self.provider);
+                self.endpoint = endpoint_from_env(
+                    &["SCREENPIPE_MEETING_OPENAI_REALTIME_URL"],
+                    OPENAI_REALTIME_URL,
+                    SCREENPIPE_CLOUD_REALTIME_PATH,
+                );
+                self.model = Some(
+                    env_non_empty("SCREENPIPE_MEETING_TRANSCRIPTION_MODEL")
+                        .unwrap_or_else(|| "gpt-4o-transcribe".to_string()),
+                );
+            }
+            MeetingStreamingProvider::Disabled => {}
+        }
+        self
+    }
+
     pub fn from_settings(
         enabled: bool,
         provider: &str,

@@ -793,11 +793,10 @@ impl AudioManager {
                 };
 
                 // Meeting live transcription has its own provider/session path.
-                // While that path is actively accepting low-latency frames, do
-                // not also run the same audio through the background STT path.
-                // The durable audio chunk was already written above; if live
-                // streaming is unavailable, the controller drops this flag and
-                // background transcription resumes normally.
+                // While a live session is active, do not also run the same
+                // audio through the background STT path. The durable audio
+                // chunk was already written above; background transcription
+                // resumes when the live session ends.
                 if meeting_audio_tap.background_suppressed() {
                     had_deferred_segments = true;
                     metrics.record_segment_deferred();

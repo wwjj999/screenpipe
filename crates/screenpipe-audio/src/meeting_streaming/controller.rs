@@ -37,6 +37,7 @@ const LIVE_MAX_SESSION_DURATION: Duration = Duration::from_secs(2 * 60 * 60);
 struct ActiveMeetingStream {
     meeting_id: i64,
     provider: String,
+    config: MeetingStreamingConfig,
     live_transcription_enabled: bool,
     started_at: Instant,
     audio_frames_seen: u64,
@@ -182,7 +183,6 @@ pub fn start_meeting_streaming_loop(
                                 }
                                 if session.live_transcription_enabled {
                                     route_frame_to_provider(
-                                        &config,
                                         &audio_tap,
                                         &transcription_engine,
                                         session,
@@ -252,15 +252,17 @@ async fn start_streaming_session(
         emit_session_ended(previous);
     }
 
-    let readiness_error = readiness_error(config, transcription_engine).await;
+    let session_config = effective_streaming_config(config, transcription_engine).await;
+    let readiness_error = readiness_error(&session_config, transcription_engine).await;
     let live_transcription_enabled =
-        config.provider.supports_live_transcription() && readiness_error.is_none();
-    let provider = config.provider.as_str().to_string();
+        session_config.provider.supports_live_transcription() && readiness_error.is_none();
+    let provider = session_config.provider.as_str().to_string();
     audio_tap.set_active(live_transcription_enabled);
-    audio_tap.set_background_suppressed(false);
+    audio_tap.set_background_suppressed(live_transcription_enabled);
     *active = Some(ActiveMeetingStream {
         meeting_id,
         provider: provider.clone(),
+        config: session_config.clone(),
         live_transcription_enabled,
         started_at: Instant::now(),
         audio_frames_seen: 0,
@@ -275,7 +277,7 @@ async fn start_streaming_session(
         app,
         title,
         provider: provider.clone(),
-        model: config.model.clone(),
+        model: session_config.model.clone(),
         live_transcription_enabled,
         started_at: Utc::now(),
     };
@@ -288,7 +290,7 @@ async fn start_streaming_session(
         emit_error(
             meeting_id,
             &provider,
-            config.model.clone(),
+            session_config.model.clone(),
             None,
             error.clone(),
         );
@@ -402,12 +404,12 @@ fn emit_status(
 }
 
 fn route_frame_to_provider(
-    config: &MeetingStreamingConfig,
     audio_tap: &MeetingAudioTap,
     transcription_engine: &Arc<RwLock<Option<TranscriptionEngine>>>,
     session: &mut ActiveMeetingStream,
     frame: MeetingAudioFrame,
 ) {
+    let config = &session.config;
     let key = device_stream_key(&frame);
     if let Some(retry_after) = session.device_retry_after.get(&key).copied() {
         if retry_after > Instant::now() {
@@ -474,7 +476,7 @@ fn route_frame_to_provider(
         Err(mpsc::error::TrySendError::Closed(_)) => {
             session.device_senders.remove(&key);
             if session.device_senders.is_empty() {
-                audio_tap.set_background_suppressed(false);
+                audio_tap.set_background_suppressed(session.live_transcription_enabled);
             }
             session.device_retry_after.insert(
                 key.clone(),
@@ -558,6 +560,46 @@ fn auto_end_reason(session: &ActiveMeetingStream, now: Instant) -> Option<AutoEn
     None
 }
 
+async fn effective_streaming_config(
+    config: &MeetingStreamingConfig,
+    transcription_engine: &Arc<RwLock<Option<TranscriptionEngine>>>,
+) -> MeetingStreamingConfig {
+    if config.provider != MeetingStreamingProvider::SelectedEngine {
+        return config.clone();
+    }
+
+    let selected_engine = transcription_engine
+        .read()
+        .await
+        .as_ref()
+        .map(TranscriptionEngine::config);
+    if selected_engine != Some(AudioTranscriptionEngine::Deepgram) {
+        return config.clone();
+    }
+
+    let cloud_config = config
+        .clone()
+        .with_provider(MeetingStreamingProvider::ScreenpipeCloud);
+    if cloud_config.live_transcription_ready() {
+        info!(
+            "meeting streaming: selected-engine resolved to screenpipe-cloud live because the selected transcription engine is screenpipe cloud"
+        );
+        return cloud_config;
+    }
+
+    let direct_deepgram_config = config
+        .clone()
+        .with_provider(MeetingStreamingProvider::DeepgramLive);
+    if direct_deepgram_config.live_transcription_ready() {
+        info!(
+            "meeting streaming: selected-engine resolved to direct Deepgram live because the selected transcription engine is Deepgram"
+        );
+        return direct_deepgram_config;
+    }
+
+    config.clone()
+}
+
 async fn readiness_error(
     config: &MeetingStreamingConfig,
     transcription_engine: &Arc<RwLock<Option<TranscriptionEngine>>>,
@@ -616,6 +658,8 @@ mod tests {
         ActiveMeetingStream {
             meeting_id: 42,
             provider: "selected-engine".to_string(),
+            config: MeetingStreamingConfig::default()
+                .with_provider(MeetingStreamingProvider::SelectedEngine),
             live_transcription_enabled: live,
             started_at: now,
             audio_frames_seen: 0,
@@ -656,5 +700,57 @@ mod tests {
             now - LIVE_NO_AUDIO_ACTIVITY_TIMEOUT - Duration::from_secs(1);
 
         assert!(!should_request_auto_end_for_inactivity(&session, now));
+    }
+
+    #[tokio::test]
+    async fn selected_deepgram_uses_cloud_live_when_token_available() {
+        let engine = TranscriptionEngine::new(
+            Arc::new(AudioTranscriptionEngine::Deepgram),
+            Some("unused-personal-key".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("deepgram engine");
+        let engine_ref = Arc::new(RwLock::new(Some(engine)));
+        let config = MeetingStreamingConfig::from_settings(
+            true,
+            "selected-engine",
+            Some("cloud-token".to_string()),
+            None,
+            None,
+            None,
+        );
+
+        let effective = effective_streaming_config(&config, &engine_ref).await;
+
+        assert_eq!(
+            effective.provider,
+            MeetingStreamingProvider::ScreenpipeCloud
+        );
+        assert!(effective.live_transcription_ready());
+        assert_eq!(effective.model.as_deref(), Some("nova-3"));
+        assert!(effective.endpoint.starts_with("wss://"));
+    }
+
+    #[tokio::test]
+    async fn selected_deepgram_without_live_credentials_stays_selected_engine() {
+        let engine = TranscriptionEngine::new(
+            Arc::new(AudioTranscriptionEngine::Deepgram),
+            Some("unused-personal-key".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("deepgram engine");
+        let engine_ref = Arc::new(RwLock::new(Some(engine)));
+        let config =
+            MeetingStreamingConfig::from_settings(true, "selected-engine", None, None, None, None);
+
+        let effective = effective_streaming_config(&config, &engine_ref).await;
+
+        assert_eq!(effective.provider, MeetingStreamingProvider::SelectedEngine);
     }
 }
