@@ -643,7 +643,7 @@ pub async fn render_context(
             ));
         } else {
             // OAuth without proxy — still don't expose the token
-            out.push_str("  (connected via OAuth — no proxy available, use API directly)\n");
+            out.push_str("  (connected via OAuth — use the endpoints listed above; no raw token is exposed)\n");
         }
     }
 
@@ -776,11 +776,11 @@ mod tests {
         dir
     }
 
-    fn creds() -> Map<String, Value> {
+    fn manual_webhook_creds() -> Map<String, Value> {
         let mut creds = Map::new();
         creds.insert(
-            "api_key".to_string(),
-            Value::String("test-token".to_string()),
+            "webhook_url".to_string(),
+            Value::String("https://example.com/webhook".to_string()),
         );
         creds
     }
@@ -790,17 +790,17 @@ mod tests {
         let dir = temp_screenpipe_dir();
         let mgr = ConnectionManager::new(dir.clone(), None);
 
-        mgr.connect_instance("slack", Some("work"), creds())
+        mgr.connect_instance("discord", Some("work"), manual_webhook_creds())
             .await
             .unwrap();
 
-        let slack = mgr
+        let discord = mgr
             .list()
             .await
             .into_iter()
-            .find(|connection| connection.def.id == "slack")
+            .find(|connection| connection.def.id == "discord")
             .unwrap();
-        assert!(slack.connected);
+        assert!(discord.connected);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -810,13 +810,13 @@ mod tests {
         let dir = temp_screenpipe_dir();
         let mgr = ConnectionManager::new(dir.clone(), None);
 
-        mgr.connect_instance("slack", Some("work"), creds())
+        mgr.connect_instance("discord", Some("work"), manual_webhook_creds())
             .await
             .unwrap();
 
         let context = render_context(&dir, 3030, None).await;
-        assert!(context.contains("## Slack (slack, instance: work)"));
-        assert!(context.contains("api_key: test-token"));
+        assert!(context.contains("## Discord (discord, instance: work)"));
+        assert!(context.contains("webhook_url: https://example.com/webhook"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

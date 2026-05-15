@@ -238,6 +238,20 @@ pub struct TestRequest {
 }
 
 #[derive(Deserialize)]
+pub struct SlackSendRequest {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub blocks: Option<Value>,
+    #[serde(default)]
+    pub attachments: Option<Value>,
+    #[serde(default)]
+    pub instance: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Deserialize)]
 pub struct WhatsAppPairRequest {
     pub bun_path: String,
 }
@@ -1673,6 +1687,32 @@ async fn connection_config(
     axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
 ) -> (StatusCode, Json<Value>) {
     let (instance, _) = split_instance_query(raw_query.as_deref());
+    if id == "slack" {
+        if let Some(oauth) =
+            oauth_store::load_oauth_json(state.secret_store.as_deref(), &id, instance.as_deref())
+                .await
+        {
+            let mut safe = Map::new();
+            for key in [
+                "workspace_name",
+                "team_id",
+                "slack_channel",
+                "slack_channel_id",
+            ] {
+                if let Some(value) = oauth.get(key) {
+                    safe.insert(key.to_string(), value.clone());
+                }
+            }
+            if let Some(url) = oauth["incoming_webhook"]["configuration_url"].as_str() {
+                safe.insert(
+                    "configuration_url".to_string(),
+                    Value::String(url.to_string()),
+                );
+            }
+            return (StatusCode::OK, Json(json!({ "config": safe })));
+        }
+    }
+
     let mgr = state.cm.lock().await;
     match mgr.get_credentials_instance(&id, instance.as_deref()).await {
         Ok(Some(creds)) => {
@@ -1697,6 +1737,102 @@ async fn connection_config(
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// POST /connections/slack/send — send a Slack message through the incoming
+/// webhook selected during OAuth. The webhook URL remains server-side.
+async fn slack_send(
+    State(state): State<ConnectionsState>,
+    Json(body): Json<SlackSendRequest>,
+) -> (StatusCode, Json<Value>) {
+    let token_json = match oauth_store::load_oauth_json(
+        state.secret_store.as_deref(),
+        "slack",
+        body.instance.as_deref(),
+    )
+    .await
+    {
+        Some(value) => value,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(
+                    json!({ "error": "Slack is not connected. Connect Slack in Settings > Connections." }),
+                ),
+            );
+        }
+    };
+
+    let webhook_url = match token_json["incoming_webhook"]["url"].as_str() {
+        Some(url) if !url.is_empty() => url,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    json!({ "error": "Slack connection does not include an incoming webhook. Reconnect Slack and choose a channel." }),
+                ),
+            );
+        }
+    };
+
+    let mut payload = body.extra;
+    if let Some(text) = body.text {
+        payload.insert("text".to_string(), Value::String(text));
+    }
+    if let Some(blocks) = body.blocks {
+        payload.insert("blocks".to_string(), blocks);
+    }
+    if let Some(attachments) = body.attachments {
+        payload.insert("attachments".to_string(), attachments);
+    }
+
+    if payload.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({ "error": "Slack message requires text, blocks, attachments, or another webhook payload field." }),
+            ),
+        );
+    }
+
+    match reqwest::Client::new()
+        .post(webhook_url)
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "channel": token_json["slack_channel"]
+                            .as_str()
+                            .or_else(|| token_json["incoming_webhook"]["channel"].as_str()),
+                        "team": token_json["workspace_name"]
+                            .as_str()
+                            .or_else(|| token_json["team"]["name"].as_str()),
+                    })),
+                )
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "Slack webhook request failed",
+                        "status": status.as_u16(),
+                        "details": text,
+                    })),
+                )
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("Slack webhook request failed: {}", e) })),
         ),
     }
 }
@@ -2270,6 +2406,8 @@ where
         .route("/gmail/messages", get(gmail_list_messages))
         .route("/gmail/messages/:id", get(gmail_get_message))
         .route("/gmail/send", post(gmail_send))
+        // Slack-specific send route (must be before /:id to avoid conflict)
+        .route("/slack/send", post(slack_send))
         // WhatsApp-specific routes (must be before /:id to avoid conflict)
         .route("/whatsapp/pair", post(whatsapp_pair))
         .route("/whatsapp/status", get(whatsapp_status))

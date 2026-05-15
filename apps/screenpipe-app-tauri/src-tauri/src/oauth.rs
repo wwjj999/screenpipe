@@ -282,6 +282,32 @@ pub async fn oauth_connect(
         }
     }
 
+    // Slack's OAuth response nests the user-selected incoming webhook and team
+    // metadata. Copy stable, non-secret identifiers to top-level fields so the
+    // generic OAuth UI can display a useful account name and the local
+    // connection config can expose channel/workspace context without exposing
+    // the webhook URL.
+    if integration_id == "slack" {
+        if let Some(team_name) = token_data["team"]["name"].as_str().map(String::from) {
+            token_data["workspace_name"] = serde_json::Value::String(team_name);
+        }
+        if let Some(team_id) = token_data["team"]["id"].as_str().map(String::from) {
+            token_data["team_id"] = serde_json::Value::String(team_id);
+        }
+        if let Some(channel) = token_data["incoming_webhook"]["channel"]
+            .as_str()
+            .map(String::from)
+        {
+            token_data["slack_channel"] = serde_json::Value::String(channel);
+        }
+        if let Some(channel_id) = token_data["incoming_webhook"]["channel_id"]
+            .as_str()
+            .map(String::from)
+        {
+            token_data["slack_channel_id"] = serde_json::Value::String(channel_id);
+        }
+    }
+
     // Extract email from id_token JWT if not already at the root (Google puts it in the JWT)
     if token_data["email"].is_null() {
         if let Some(id_token) = token_data["id_token"].as_str() {
