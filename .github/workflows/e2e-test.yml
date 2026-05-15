@@ -228,6 +228,7 @@ jobs:
   linux-e2e-test:
     name: Linux E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       # WebKit2GTK + xvfb workarounds. Without these, WebKit2GTK 4.1
