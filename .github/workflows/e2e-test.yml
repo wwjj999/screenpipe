@@ -271,6 +271,8 @@ jobs:
         unzip -q "$tmp_dir/bun.zip" -d "$tmp_dir"
         cp "$tmp_dir/bun-linux-x64/bun" "$install_dir/bun"
         chmod +x "$install_dir/bun"
+        ln -sf "$install_dir/bun" "$install_dir/bunx"
+        echo "BUN_INSTALL=$HOME/.bun" >> "$GITHUB_ENV"
         echo "$install_dir" >> "$GITHUB_PATH"
         "$install_dir/bun" --version
 
