@@ -870,7 +870,7 @@ export function NoteView({
                   size="sm"
                   onClick={() => void onStop()}
                   disabled={stopping}
-                  className="h-9 gap-2 rounded-none"
+                  className="h-9 gap-2 rounded-none normal-case tracking-normal border-border bg-background text-foreground hover:bg-muted hover:text-foreground active:bg-muted disabled:opacity-100 disabled:bg-muted/40 disabled:text-muted-foreground disabled:border-border"
                 >
                   {stopping ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />

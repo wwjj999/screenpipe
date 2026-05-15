@@ -213,7 +213,7 @@ function RecordingStrip({
         size="sm"
         onClick={() => void onStop()}
         disabled={stopping}
-        className="gap-1.5 h-8 px-3 shrink-0"
+        className="gap-1.5 h-8 px-3 shrink-0 normal-case tracking-normal border-border bg-background text-foreground hover:bg-muted hover:text-foreground active:bg-muted disabled:opacity-100 disabled:bg-muted/40 disabled:text-muted-foreground disabled:border-border"
       >
         {stopping ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
