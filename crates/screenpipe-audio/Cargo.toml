@@ -32,7 +32,7 @@ oasgen = { workspace = true }
 # AEC feature (added 2026-05-06). It hasn't been wired into a user-
 # visible toggle yet, so reverting is no-op for end users while
 # restoring Windows capture across the board.
-cpal = { git = "https://github.com/screenpipe/cpal.git", rev = "1be10a9d67ac7e6b9e0225d2d67ec56058a7dba2" }
+cpal = { git = "https://github.com/divanshu-go/cpal.git", branch = "windows-aec" }
 
 # Wav encoding
 hound = "3.5"

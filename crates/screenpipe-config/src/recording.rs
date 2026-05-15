@@ -99,6 +99,11 @@ pub struct RecordingSettings {
     )]
     pub experimental_coreaudio_system_audio: bool,
 
+    /// Experimental: request Windows WASAPI microphone Acoustic Echo Cancellation.
+    /// Ignored on non-Windows platforms and fail-open when unsupported by device/driver.
+    #[serde(rename = "windowsInputAecEnabled", default)]
+    pub windows_input_aec_enabled: bool,
+
     /// Duration of each audio chunk in seconds before transcription.
     /// Stored as i32 to match existing store.bin schema (cast to u64 by engine).
     #[serde(rename = "audioChunkDuration")]
@@ -396,6 +401,7 @@ impl Default for RecordingSettings {
             audio_devices: vec![],
             use_system_default_audio: true,
             experimental_coreaudio_system_audio: false,
+            windows_input_aec_enabled: false,
             audio_chunk_duration: 30,
             deepgram_api_key: String::new(),
             filter_music: false,

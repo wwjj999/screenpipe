@@ -1446,6 +1446,7 @@ export function RecordingSettings() {
   const isDisabled = health?.status_code === 500;
   const audioPipeline = health?.audio_pipeline ?? null;
   const [isMacOS, setIsMacOS] = useState(false);
+  const [isWindows, setIsWindows] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [showOpenAIApiKey, setShowOpenAIApiKey] = useState(false);
   const [isRefreshingSubscription, setIsRefreshingSubscription] = useState(false);
@@ -1589,6 +1590,7 @@ export function RecordingSettings() {
     const checkPlatform = async () => {
       const currentPlatform = platform();
       setIsMacOS(currentPlatform === "macos");
+      setIsWindows(currentPlatform === "windows");
       // Auto-migrate macOS users off qwen3-asr (CPU-only, no Metal support)
       if (currentPlatform === "macos" && settings.audioTranscriptionEngine === "qwen3-asr") {
         handleSettingsChange({ audioTranscriptionEngine: "whisper-large-v3-turbo-quantized" }, true);
@@ -2856,6 +2858,32 @@ Your screen is a pipe. Everything you see, hear, and type flows through it. Scre
           vocabularyWords={settings.vocabularyWords ?? []}
           onChange={(words) => handleSettingsChange({ vocabularyWords: words }, true)}
         />
+        )}
+
+        {/* Windows microphone AEC */}
+        {!settings.disableAudio && isWindows && (
+        <Card className="border-border bg-card">
+          <CardContent className="px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <Mic className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div>
+                  <h3 className="text-sm font-medium text-foreground">
+                    Microphone echo cancellation
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Use Windows WASAPI AEC for supported input devices
+                  </p>
+                </div>
+              </div>
+              <Switch
+                id="windowsInputAecEnabled"
+                checked={Boolean(settings.windowsInputAecEnabled ?? false)}
+                onCheckedChange={(checked) => handleSettingsChange({ windowsInputAecEnabled: checked }, true)}
+              />
+            </div>
+          </CardContent>
+        </Card>
         )}
 
         {/* CoreAudio System Audio (macOS 14.4+ only; default on) */}

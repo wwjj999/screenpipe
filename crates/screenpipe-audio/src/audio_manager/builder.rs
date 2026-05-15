@@ -64,6 +64,8 @@ pub struct AudioManagerOptions {
     /// When false (default), System Audio uses ScreenCaptureKit as before.
     /// Has no effect on non-macOS or macOS <14.4 — falls back to SCK.
     pub experimental_coreaudio_system_audio: bool,
+    /// Experimental: request Windows WASAPI microphone AEC when the endpoint supports it.
+    pub windows_input_aec_enabled: bool,
     /// Controls when local Whisper transcription runs.
     /// `Realtime` = immediate (default), `Batch` = accumulate longer chunks for quality.
     pub transcription_mode: TranscriptionMode,
@@ -107,6 +109,7 @@ impl Default for AudioManagerOptions {
             filter_music: false,
             use_system_default_audio: true,
             experimental_coreaudio_system_audio: false,
+            windows_input_aec_enabled: false,
             transcription_mode: TranscriptionMode::default(),
             meeting_detector: None,
             meeting_streaming: MeetingStreamingConfig::default(),
@@ -198,6 +201,11 @@ impl AudioManagerBuilder {
 
     pub fn experimental_coreaudio_system_audio(mut self, enabled: bool) -> Self {
         self.options.experimental_coreaudio_system_audio = enabled;
+        self
+    }
+
+    pub fn windows_input_aec_enabled(mut self, enabled: bool) -> Self {
+        self.options.windows_input_aec_enabled = enabled;
         self
     }
 

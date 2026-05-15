@@ -299,6 +299,11 @@ pub struct RecordArgs {
     #[arg(long, default_value_t = false)]
     pub experimental_coreaudio_system_audio: bool,
 
+    /// [experimental, Windows] Request WASAPI microphone AEC when supported.
+    /// Ignored on non-Windows platforms and unsupported endpoints.
+    #[arg(long, default_value_t = false)]
+    pub windows_input_aec_enabled: bool,
+
     /// Data directory. Default to $HOME/.screenpipe
     #[arg(long, value_hint = ValueHint::DirPath)]
     pub data_dir: Option<String>,
@@ -485,6 +490,7 @@ pub struct RecordArgSources {
     pub audio_device: bool,
     pub use_system_default_audio: bool,
     pub experimental_coreaudio_system_audio: bool,
+    pub windows_input_aec_enabled: bool,
     pub audio_transcription_engine: bool,
     pub monitor_id: bool,
     pub use_all_monitors: bool,
@@ -527,6 +533,7 @@ impl RecordArgSources {
                 record,
                 "experimental_coreaudio_system_audio",
             ),
+            windows_input_aec_enabled: from_command_line(record, "windows_input_aec_enabled"),
             audio_transcription_engine: from_command_line(record, "audio_transcription_engine"),
             monitor_id: from_command_line(record, "monitor_id"),
             use_all_monitors: from_command_line(record, "use_all_monitors"),
@@ -561,6 +568,7 @@ impl RecordArgSources {
             || self.audio_device
             || self.use_system_default_audio
             || self.experimental_coreaudio_system_audio
+            || self.windows_input_aec_enabled
             || self.audio_transcription_engine
             || self.monitor_id
             || self.use_all_monitors
@@ -643,6 +651,7 @@ impl RecordArgs {
             audio_devices: self.audio_device.clone(),
             use_system_default_audio: self.use_system_default_audio,
             experimental_coreaudio_system_audio: self.experimental_coreaudio_system_audio,
+            windows_input_aec_enabled: self.windows_input_aec_enabled,
             monitor_ids: self.monitor_id.iter().map(|id| id.to_string()).collect(),
             // Explicit `--monitor-id` implies opting out of `--use-all-monitors`.
             // `use_all_monitors` has `default_value_t = true`, so without this
@@ -828,6 +837,9 @@ impl RecordArgs {
         }
         if sources.experimental_coreaudio_system_audio {
             settings.experimental_coreaudio_system_audio = self.experimental_coreaudio_system_audio;
+        }
+        if sources.windows_input_aec_enabled {
+            settings.windows_input_aec_enabled = self.windows_input_aec_enabled;
         }
         if sources.audio_transcription_engine {
             settings.audio_transcription_engine =

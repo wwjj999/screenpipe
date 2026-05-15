@@ -18,10 +18,12 @@ pub struct DeviceManager {
     /// AudioStream::from_device at device-start time. Has no effect on
     /// macOS <14.4 or non-macOS — falls back to SCK there.
     use_coreaudio_tap: bool,
+    /// When true, Windows WASAPI input streams request endpoint AEC.
+    windows_input_aec: bool,
 }
 
 impl DeviceManager {
-    pub async fn new(use_coreaudio_tap: bool) -> Result<Self> {
+    pub async fn new(use_coreaudio_tap: bool, windows_input_aec: bool) -> Result<Self> {
         let streams = Arc::new(DashMap::new());
         let states = Arc::new(DashMap::new());
 
@@ -29,6 +31,7 @@ impl DeviceManager {
             streams,
             states,
             use_coreaudio_tap,
+            windows_input_aec,
         })
     }
 
@@ -50,6 +53,7 @@ impl DeviceManager {
             Arc::new(device.clone()),
             is_running.clone(),
             self.use_coreaudio_tap,
+            self.windows_input_aec,
         )
         .await
         {

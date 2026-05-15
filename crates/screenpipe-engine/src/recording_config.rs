@@ -58,6 +58,8 @@ pub struct RecordingConfig {
     pub use_system_default_audio: bool,
     /// Experimental: use CoreAudio Process Tap for System Audio on macOS 14.4+.
     pub experimental_coreaudio_system_audio: bool,
+    /// Experimental: request Windows WASAPI microphone AEC when supported.
+    pub windows_input_aec_enabled: bool,
     pub monitor_ids: Vec<String>,
     pub use_all_monitors: bool,
 
@@ -217,6 +219,7 @@ impl RecordingConfig {
             audio_devices: settings.audio_devices.clone(),
             use_system_default_audio: settings.use_system_default_audio,
             experimental_coreaudio_system_audio: settings.experimental_coreaudio_system_audio,
+            windows_input_aec_enabled: settings.windows_input_aec_enabled,
             monitor_ids: settings.monitor_ids.clone(),
             use_all_monitors: settings.use_all_monitors,
             ignored_windows: settings.ignored_windows.clone(),
@@ -319,6 +322,7 @@ impl RecordingConfig {
             .enabled_devices(audio_devices)
             .use_system_default_audio(self.use_system_default_audio)
             .experimental_coreaudio_system_audio(self.experimental_coreaudio_system_audio)
+            .windows_input_aec_enabled(self.windows_input_aec_enabled)
             .deepgram_api_key(self.deepgram_api_key.clone())
             .output_path(output_path)
             .use_pii_removal(self.use_pii_removal)
