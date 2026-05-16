@@ -7,10 +7,9 @@ use anyhow::anyhow;
 use anyhow::Result;
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
 use cpal::traits::{DeviceTrait, StreamTrait};
-// cpal 0.15.3 (the rev we're pinned to in Cargo.toml — see comment
-// there for why) names its error type `StreamError`. cpal 0.18
-// renamed it to `Error`. We alias to `CpalError` here so call sites
-// don't carry the version-specific name.
+// The current cpal 0.15-compatible fork names its error type
+// `StreamError`. cpal 0.18 renamed it to `Error`. We alias to
+// `CpalError` here so call sites don't carry the version-specific name.
 #[cfg(not(all(target_os = "linux", feature = "pulseaudio")))]
 use cpal::StreamError as CpalError;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -564,6 +563,7 @@ fn build_input_stream(
                 },
                 error_callback,
                 None,
+                None,
             )
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I16 => device
@@ -575,6 +575,7 @@ fn build_input_stream(
                     let _ = tx.send(mono);
                 },
                 error_callback,
+                None,
                 None,
             )
             .map_err(|e| anyhow!(e)),
@@ -591,6 +592,7 @@ fn build_input_stream(
                 },
                 error_callback,
                 None,
+                None,
             )
             .map_err(|e| anyhow!(e)),
         cpal::SampleFormat::I8 => device
@@ -602,6 +604,7 @@ fn build_input_stream(
                     let _ = tx.send(mono);
                 },
                 error_callback,
+                None,
                 None,
             )
             .map_err(|e| anyhow!(e)),
@@ -617,6 +620,7 @@ fn cpal_stream_config(
     config: &cpal::SupportedStreamConfig,
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] windows_input_aec: bool,
 ) -> cpal::StreamConfig {
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut stream_config = config.config();
     #[cfg(target_os = "windows")]
     {
