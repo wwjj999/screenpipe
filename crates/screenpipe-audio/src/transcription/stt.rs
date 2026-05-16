@@ -10,6 +10,7 @@ use crate::speaker::embedding_manager::EmbeddingManager;
 use crate::speaker::prepare_segments;
 use crate::speaker::segment::SpeechSegment;
 use crate::transcription::deepgram::batch::transcribe_with_deepgram;
+use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 use crate::transcription::engine::TranscriptionSession;
 use crate::transcription::openai_compatible::batch::transcribe_with_openai_compatible;
 use crate::transcription::whisper::batch::process_with_whisper;
@@ -112,7 +113,7 @@ pub async fn stt_sync(
     sample_rate: u32,
     device: &str,
     audio_transcription_engine: Arc<AudioTranscriptionEngine>,
-    deepgram_api_key: Option<String>,
+    deepgram_config: Option<DeepgramTranscriptionConfig>,
     openai_compatible_config: Option<OpenAICompatibleConfig>,
     languages: Vec<Language>,
     whisper_state: &mut WhisperState,
@@ -128,7 +129,7 @@ pub async fn stt_sync(
         sample_rate,
         &device,
         audio_transcription_engine,
-        deepgram_api_key,
+        deepgram_config,
         openai_compatible_config,
         languages,
         whisper_state,
@@ -144,7 +145,7 @@ pub async fn stt(
     sample_rate: u32,
     device: &str,
     audio_transcription_engine: Arc<AudioTranscriptionEngine>,
-    deepgram_api_key: Option<String>,
+    deepgram_config: Option<DeepgramTranscriptionConfig>,
     openai_compatible_config: Option<OpenAICompatibleConfig>,
     languages: Vec<Language>,
     whisper_state: &mut WhisperState,
@@ -170,10 +171,12 @@ pub async fn stt(
             );
             Ok(String::new())
         } else {
-            let api_key = deepgram_api_key.unwrap_or_default();
+            let config = deepgram_config
+                .filter(DeepgramTranscriptionConfig::is_ready)
+                .ok_or_else(|| anyhow::anyhow!("Deepgram transcription config is missing"))?;
 
             match transcribe_with_deepgram(
-                &api_key,
+                &config,
                 audio,
                 device,
                 sample_rate,

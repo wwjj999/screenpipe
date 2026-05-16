@@ -353,7 +353,7 @@ async fn restore_interrupted_meeting_for_capture_restart(
         let mut manual = server.manual_meeting.write().await;
         *manual = Some(interrupted.id);
     }
-    if let Some(detector) = server.audio_manager.meeting_detector() {
+    if let Some(detector) = server.audio_manager.meeting_detector().await {
         detector.set_v2_in_meeting(true);
     }
 

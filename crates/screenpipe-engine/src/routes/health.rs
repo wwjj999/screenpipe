@@ -729,7 +729,7 @@ async fn health_check_inner(state: &Arc<AppState>) -> HealthCheckResponse {
             // Query meeting detector state — timeout the RwLock read so it
             // can't stall the health check if writes are contended.
             let (meeting_detected, meeting_app) =
-                if let Some(detector) = state.audio_manager.meeting_detector() {
+                if let Some(detector) = state.audio_manager.meeting_detector().await {
                     let in_meeting = detector.is_in_meeting();
                     // v2 detection reports meeting state via AtomicBool flag;
                     // the specific app name is tracked in the v2 detection loop,

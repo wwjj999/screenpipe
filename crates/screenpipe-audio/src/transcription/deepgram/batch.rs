@@ -15,10 +15,10 @@ use tokio::net::lookup_host;
 use tracing::{debug, error, info};
 use url::Url;
 
-use crate::transcription::deepgram::{CUSTOM_DEEPGRAM_API_TOKEN, DEEPGRAM_API_URL};
+use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 
 pub async fn transcribe_with_deepgram(
-    api_key: &str,
+    config: &DeepgramTranscriptionConfig,
     audio_data: &[f32],
     device: &str,
     sample_rate: u32,
@@ -26,10 +26,6 @@ pub async fn transcribe_with_deepgram(
     vocabulary: &[VocabularyEntry],
 ) -> Result<String> {
     debug!("starting deepgram transcription");
-
-    // Use token from env var
-    let custom_api_key = CUSTOM_DEEPGRAM_API_TOKEN.as_str();
-    let is_custom_endpoint = !custom_api_key.is_empty();
 
     // Encode as MP3 for smaller upload size (64kbps mono speech ≈ 8x smaller than WAV)
     let (audio_bytes, content_type) = create_mp3_data(audio_data, sample_rate)?;
@@ -41,27 +37,12 @@ pub async fn transcribe_with_deepgram(
 
     let query_params = create_query_params(languages, vocabulary);
 
-    // rationale: custom api key = custom AI proxy to use deepgram
-    // no custom api key = use deepgram api key for real deepgram endpoint
-    let api_key_to_use = if custom_api_key.is_empty() {
-        api_key
-    } else {
-        custom_api_key
-    };
-
     debug!(
         "deepgram api key: {}...",
-        &api_key_to_use[..api_key_to_use.len().min(8)]
+        &config.auth_token[..config.auth_token.len().min(8)]
     );
 
-    let response = get_deepgram_response(
-        api_key_to_use,
-        is_custom_endpoint,
-        audio_bytes,
-        query_params,
-        content_type,
-    )
-    .await;
+    let response = get_deepgram_response(config, audio_bytes, query_params, content_type).await;
 
     handle_deepgram_response(response, device).await
 }
@@ -151,18 +132,13 @@ fn create_query_params(languages: Vec<Language>, vocabulary: &[VocabularyEntry])
 }
 
 async fn get_deepgram_response(
-    api_key: &str,
-    is_custom_endpoint: bool,
+    config: &DeepgramTranscriptionConfig,
     audio_data: Vec<u8>,
     params: String,
     content_type: &str,
 ) -> Result<Response, reqwest::Error> {
-    let url = format!("{}?{}", *DEEPGRAM_API_URL, params);
-    let authorization = if is_custom_endpoint {
-        format!("Bearer {}", api_key)
-    } else {
-        format!("Token {}", api_key)
-    };
+    let url = format!("{}?{}", config.endpoint, params);
+    let authorization = config.authorization_header();
 
     let client = deepgram_client()?;
     let first = send_deepgram_request(

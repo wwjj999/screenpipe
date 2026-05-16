@@ -4,6 +4,7 @@
 
 use crate::core::engine::AudioTranscriptionEngine;
 use crate::transcription::deepgram::batch::transcribe_with_deepgram;
+use crate::transcription::deepgram::DeepgramTranscriptionConfig;
 use crate::transcription::openai_compatible::batch::transcribe_with_openai_compatible;
 use crate::transcription::whisper::batch::process_with_whisper;
 use crate::transcription::whisper::model::{
@@ -90,7 +91,7 @@ pub enum TranscriptionEngine {
         vocabulary: Vec<VocabularyEntry>,
     },
     Deepgram {
-        api_key: String,
+        config: DeepgramTranscriptionConfig,
         languages: Vec<Language>,
         vocabulary: Vec<VocabularyEntry>,
     },
@@ -111,18 +112,30 @@ impl TranscriptionEngine {
     /// Factory that only loads the model needed for the configured engine.
     pub async fn new(
         config: Arc<AudioTranscriptionEngine>,
-        deepgram_api_key: Option<String>,
+        deepgram_config: Option<DeepgramTranscriptionConfig>,
         openai_compatible_config: Option<crate::transcription::stt::OpenAICompatibleConfig>,
         languages: Vec<Language>,
         vocabulary: Vec<VocabularyEntry>,
     ) -> Result<Self> {
         match *config {
-            AudioTranscriptionEngine::Disabled => Ok(Self::Disabled),
+            AudioTranscriptionEngine::Disabled => {
+                info!("transcription engine runtime: Disabled (no background STT)");
+                Ok(Self::Disabled)
+            }
 
             AudioTranscriptionEngine::Deepgram => {
-                let api_key = deepgram_api_key.unwrap_or_default();
+                let dg = deepgram_config
+                    .filter(DeepgramTranscriptionConfig::is_ready)
+                    .ok_or_else(|| anyhow!("Deepgram transcription config is missing"))?;
+                info!(
+                    "transcription engine runtime: Deepgram background_provider={} endpoint_host={}",
+                    dg.provider_slug_for_log(),
+                    crate::transcription::deepgram::transcription_endpoint_host_for_log(
+                        &dg.endpoint
+                    ),
+                );
                 Ok(Self::Deepgram {
-                    api_key,
+                    config: dg,
                     languages,
                     vocabulary,
                 })
@@ -131,6 +144,14 @@ impl TranscriptionEngine {
             AudioTranscriptionEngine::OpenAICompatible => {
                 let mut oc_config = openai_compatible_config.unwrap_or_default();
                 let client = oc_config.get_or_create_client();
+                info!(
+                    "transcription engine runtime: OpenAI-compatible endpoint_host={} model={} api_key_configured={}",
+                    crate::transcription::deepgram::transcription_endpoint_host_for_log(
+                        &oc_config.endpoint
+                    ),
+                    oc_config.model,
+                    oc_config.api_key.as_ref().map_or(false, |k| !k.is_empty()),
+                );
                 Ok(Self::OpenAICompatible {
                     endpoint: oc_config.endpoint,
                     api_key: oc_config.api_key,
@@ -146,6 +167,7 @@ impl TranscriptionEngine {
             AudioTranscriptionEngine::Qwen3Asr => {
                 #[cfg(feature = "qwen3-asr")]
                 {
+                    info!("transcription engine runtime: initializing Qwen3 ASR");
                     const MODEL_NAME: &str = "qwen3-asr-0.6b-antirez";
                     let load_result = tokio::task::spawn_blocking(|| {
                         audiopipe::Model::from_pretrained_cache_only(MODEL_NAME)
@@ -182,7 +204,7 @@ impl TranscriptionEngine {
                 // Auto-upgrade to MLX (GPU) when the feature is compiled in
                 #[cfg(feature = "parakeet-mlx")]
                 {
-                    info!("parakeet selected — auto-upgrading to parakeet-mlx (Metal GPU)");
+                    info!("transcription engine runtime: Parakeet (MLX / Metal GPU)");
                     const MODEL_NAME: &str = "parakeet-tdt-0.6b-v3-mlx";
                     let load_result = tokio::task::spawn_blocking(|| {
                         audiopipe::Model::from_pretrained_cache_only(MODEL_NAME)
@@ -219,6 +241,7 @@ impl TranscriptionEngine {
                 }
                 #[cfg(all(feature = "parakeet", not(feature = "parakeet-mlx")))]
                 {
+                    info!("transcription engine runtime: Parakeet (CPU)");
                     const MODEL_NAME: &str = "parakeet-tdt-0.6b-v3";
                     let load_result = tokio::task::spawn_blocking(|| {
                         audiopipe::Model::from_pretrained_cache_only(MODEL_NAME)
@@ -254,6 +277,7 @@ impl TranscriptionEngine {
             AudioTranscriptionEngine::ParakeetMlx => {
                 #[cfg(feature = "parakeet-mlx")]
                 {
+                    info!("transcription engine runtime: Parakeet MLX (GPU)");
                     const MODEL_NAME: &str = "parakeet-tdt-0.6b-v3-mlx";
                     let load_result = tokio::task::spawn_blocking(|| {
                         audiopipe::Model::from_pretrained_cache_only(MODEL_NAME)
@@ -295,6 +319,7 @@ impl TranscriptionEngine {
 
             // All Whisper variants
             _ => {
+                info!("transcription engine runtime: Whisper variant={}", *config);
                 let quantized_path = match get_cached_whisper_model_path(&config) {
                     Some(path) => path,
                     None => {
@@ -394,11 +419,11 @@ impl TranscriptionEngine {
                 vocabulary: vocabulary.clone(),
             }),
             Self::Deepgram {
-                api_key,
+                config,
                 languages,
                 vocabulary,
             } => Ok(TranscriptionSession::Deepgram {
-                api_key: api_key.clone(),
+                config: config.clone(),
                 languages: languages.clone(),
                 vocabulary: vocabulary.clone(),
             }),
@@ -477,7 +502,7 @@ pub enum TranscriptionSession {
         vocabulary: Vec<VocabularyEntry>,
     },
     Deepgram {
-        api_key: String,
+        config: DeepgramTranscriptionConfig,
         languages: Vec<Language>,
         vocabulary: Vec<VocabularyEntry>,
     },
@@ -506,7 +531,7 @@ impl TranscriptionSession {
             Self::Disabled => Ok(String::new()),
 
             Self::Deepgram {
-                api_key,
+                config,
                 languages,
                 vocabulary,
             } => {
@@ -526,7 +551,7 @@ impl TranscriptionSession {
                     Ok(String::new())
                 } else {
                     match transcribe_with_deepgram(
-                        api_key,
+                        config,
                         audio,
                         device,
                         sample_rate,
