@@ -25,10 +25,8 @@ interface SummaryCardsProps {
   pipesLoading?: boolean;
 }
 
-// ─── Grid scan refresh animation ──────────────────────────────────────────────
-// Brand-aligned: 3x2 card skeleton with micro-grid scan inside each card.
-// A diagonal scan line sweeps across all 6 cards simultaneously — cells flip
-// on/off as it passes, like screenpipe scanning your screen for new context.
+// ─── Suggestion refresh animation ─────────────────────────────────────────────
+// Two quiet rows matching the persistent suggestion layout.
 
 function SuggestionSkeleton() {
   const GRID_COLS = 8;
@@ -46,34 +44,28 @@ function SuggestionSkeleton() {
   }, []);
 
   return (
-    <div className="grid grid-cols-3 gap-1.5">
-      {[0, 1, 2, 3, 4, 5].map((cardIdx) => {
-        const cardRow = Math.floor(cardIdx / 3);
-        const cardCol = cardIdx % 3;
-        // Offset each card's scan phase so the line travels across all 6
-        const cardOffset = cardRow * 4 + cardCol * 3;
+    <div className="divide-y divide-border/35 border-y border-border/25">
+      {[0, 1].map((rowIdx) => {
+        const rowOffset = rowIdx * 4;
 
         return (
           <div
-            key={cardIdx}
-            className="border border-border/20 p-2"
-            style={{ minHeight: 52 }}
+            key={rowIdx}
+            className="flex min-h-[44px] items-center gap-2 px-2 py-2"
           >
-            {/* Micro grid — scan line sweeps diagonally */}
             <div
-              className="grid gap-px mb-2"
+              className="grid shrink-0 gap-px"
               style={{
-                gridTemplateColumns: `repeat(${GRID_COLS}, 4px)`,
-                gridTemplateRows: `repeat(${GRID_ROWS}, 4px)`,
+                gridTemplateColumns: `repeat(${GRID_COLS}, 3px)`,
+                gridTemplateRows: `repeat(${GRID_ROWS}, 3px)`,
               }}
             >
               {Array.from({ length: CARD_CELLS }, (_, i) => {
                 const r = Math.floor(i / GRID_COLS);
                 const c = i % GRID_COLS;
-                const diag = r + c + cardOffset;
+                const diag = r + c + rowOffset;
                 const scanPos = tick % (GRID_ROWS + GRID_COLS + 10);
                 const dist = Math.abs(diag - scanPos);
-                // On the scan line = bright, trailing = dimmer, rest = faint flicker
                 const on = dist === 0 || (dist < 3 && ((tick + i) % 3 === 0));
                 return (
                   <div
@@ -81,20 +73,21 @@ function SuggestionSkeleton() {
                     className={`transition-colors duration-75 ${
                       on ? "bg-foreground" : dist < 5 ? "bg-foreground/10" : "bg-foreground/[0.03]"
                     }`}
-                    style={{ width: 4, height: 4 }}
+                    style={{ width: 3, height: 3 }}
                   />
                 );
               })}
             </div>
-            {/* Text placeholder bars that pulse with the scan */}
-            <div
-              className="h-[7px] bg-foreground/[0.08] transition-all duration-100"
-              style={{ width: `${55 + Math.sin(tick * 0.15 + cardIdx) * 25}%` }}
-            />
-            <div
-              className="h-[5px] bg-foreground/[0.04] mt-1 transition-all duration-100"
-              style={{ width: `${35 + Math.sin(tick * 0.15 + cardIdx + 2) * 20}%` }}
-            />
+            <div className="min-w-0 flex-1 space-y-1">
+              <div
+                className="h-[7px] bg-foreground/[0.08] transition-all duration-100"
+                style={{ width: `${55 + Math.sin(tick * 0.15 + rowIdx) * 25}%` }}
+              />
+              <div
+                className="h-[5px] bg-foreground/[0.04] transition-all duration-100"
+                style={{ width: `${35 + Math.sin(tick * 0.15 + rowIdx + 2) * 20}%` }}
+              />
+            </div>
           </div>
         );
       })}
@@ -186,7 +179,6 @@ export function SummaryCards({
   const templates = templatePipes.length > 0 ? templatePipes : FALLBACK_TEMPLATES;
   const featured = templates.filter((t) => t.featured);
   const discover = templates.filter((t) => !t.featured);
-  const hasConnectionSuggestions = autoSuggestions.some((s) => s.connectionIcon);
 
   const handleCardClick = (pipe: TemplatePipe) => {
     onSendMessage(pipe.prompt, `${pipe.icon} ${pipe.title}`);
@@ -330,10 +322,7 @@ export function SummaryCards({
 
       {/* ─── Dynamic AI suggestions ─────────────────────────────────────────── */}
       <div className="w-full max-w-lg">
-        <div className="flex items-center gap-1.5 mb-1.5 px-1">
-          <div className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium font-mono">
-            {hasConnectionSuggestions ? "based on activity + connections" : "based on your activity"}
-          </div>
+        <div className="mb-1 flex justify-end px-1">
           {onRefreshSuggestions && (
             <button
               onClick={onRefreshSuggestions}
@@ -346,7 +335,7 @@ export function SummaryCards({
           )}
         </div>
 
-        {/* Grid scan skeleton while refreshing / suggestion cards */}
+        {/* Persistent suggestions */}
         <AnimatePresence mode="wait">
         {suggestionsRefreshing ? (
           <motion.div
@@ -360,15 +349,14 @@ export function SummaryCards({
           </motion.div>
         ) : (
           <motion.div
-            key="cards"
+            key="suggestions"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="grid grid-cols-3 gap-1.5"
+            className="divide-y divide-border/35 border-y border-border/25"
           >
-              {autoSuggestions.slice(0, 6).map((s, i) => {
-                const isHero = (s.priority ?? 2) === 1 && i === 0;
+              {autoSuggestions.slice(0, 2).map((s, i) => {
                 return (
                   <motion.button
                     key={s.text}
@@ -377,28 +365,15 @@ export function SummaryCards({
                     transition={{ duration: 0.15, delay: i * 0.05 }}
                     type="button"
                     onClick={() => onSendMessage(s.text)}
-                    className={`group text-left p-2 font-mono bg-muted/20 hover:bg-foreground hover:text-background border hover:border-foreground text-muted-foreground transition-all duration-150 cursor-pointer ${
-                      isHero
-                        ? "border-border/40 bg-muted/30"
-                        : "border-border/20"
-                    }`}
+                    className="group flex min-h-[44px] w-full items-center gap-2 px-2 py-2 text-left font-mono text-muted-foreground transition-colors duration-150 hover:bg-muted/25 hover:text-foreground"
                     title={s.text}
                   >
-                    <div className="flex items-start gap-1.5 min-w-0">
-                      {s.connectionIcon && (
-                        <span className="mt-px">
-                          <ConnectionSuggestionIcon name={s.connectionIcon} />
-                        </span>
-                      )}
-                      <div className={`min-w-0 text-[11px] leading-tight ${isHero ? "font-medium" : ""} line-clamp-2`}>
-                        {s.text}
-                      </div>
-                    </div>
-                    {s.preview && (
-                      <div className="text-[10px] text-muted-foreground/50 group-hover:text-background/50 leading-tight mt-0.5 truncate">
-                        {s.preview}
-                      </div>
-                    )}
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                      {s.connectionIcon && <ConnectionSuggestionIcon name={s.connectionIcon} />}
+                    </span>
+                    <span className="min-w-0 flex-1 text-sm leading-snug line-clamp-2">
+                      {s.text}
+                    </span>
                   </motion.button>
                 );
               })}
