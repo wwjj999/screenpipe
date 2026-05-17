@@ -550,8 +550,7 @@ impl ServerCore {
                         tables: ALL_TARGET_TABLES.to_vec(),
                         ..Default::default()
                     };
-                    let _ = Worker::new(pool, pipeline_arc, cfg)
-                        .spawn_with_shutdown(shutdown);
+                    let _ = Worker::new(pool, pipeline_arc, cfg).spawn_with_shutdown(shutdown);
                 });
             }
         }
@@ -565,8 +564,7 @@ impl ServerCore {
             let pool = db.pool.clone();
             if use_tinfoil {
                 info!("starting async image-PII worker (backend=tinfoil)");
-                let detector =
-                    Arc::new(TinfoilImageRedactor::from_env()) as Arc<dyn ImageRedactor>;
+                let detector = Arc::new(TinfoilImageRedactor::from_env()) as Arc<dyn ImageRedactor>;
                 let _ = ImageWorker::new(pool, detector, ImageWorkerConfig::default())
                     .spawn_with_shutdown(redact_shutdown.clone());
             } else {
@@ -578,14 +576,10 @@ impl ServerCore {
                     match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
                         Ok(detector) => {
                             info!("starting async image-PII worker (backend=local)");
-                            let detector_arc =
-                                Arc::new(detector) as Arc<dyn ImageRedactor>;
-                            let _ = ImageWorker::new(
-                                pool,
-                                detector_arc,
-                                ImageWorkerConfig::default(),
-                            )
-                            .spawn_with_shutdown(shutdown);
+                            let detector_arc = Arc::new(detector) as Arc<dyn ImageRedactor>;
+                            let _ =
+                                ImageWorker::new(pool, detector_arc, ImageWorkerConfig::default())
+                                    .spawn_with_shutdown(shutdown);
                         }
                         Err(e) => {
                             warn!(

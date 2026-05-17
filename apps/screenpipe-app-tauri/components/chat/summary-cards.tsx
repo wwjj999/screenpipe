@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, ChevronUp, Plus, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronUp, Plug, Plus, RefreshCw } from "lucide-react";
 import { PipeAIIconLarge } from "@/components/pipe-ai-icon";
 import { type TemplatePipe } from "@/lib/hooks/use-pipes";
 import { FALLBACK_TEMPLATES, type CustomTemplate } from "@/lib/summary-templates";
@@ -102,6 +102,70 @@ function SuggestionSkeleton() {
   );
 }
 
+const CONNECTION_ICON_PATHS: Record<string, string> = {
+  "apple-calendar": "/images/apple.svg",
+  asana: "/images/asana.svg",
+  github: "/images/github.png",
+  "github-issues": "/images/github.png",
+  github_issues: "/images/github.png",
+  "google-calendar": "/images/google-calendar.svg",
+  "google calendar": "/images/google-calendar.svg",
+  "google-docs": "/images/google-docs.svg",
+  "google docs": "/images/google-docs.svg",
+  "google-sheets": "/images/google-sheets.svg",
+  "google sheets": "/images/google-sheets.svg",
+  hubspot: "/images/hubspot.png",
+  jira: "/images/jira.png",
+  linear: "/images/linear.svg",
+  notion: "/images/notion.svg",
+  posthog: "/images/posthog.svg",
+  zapier: "/images/zapier.png",
+};
+
+function normalizeConnectionIconKey(name: string) {
+  return name.trim().toLowerCase().replace(/\.app$|\.exe$/i, "");
+}
+
+function ConnectionSuggestionIcon({ name }: { name: string }) {
+  const key = normalizeConnectionIconKey(name);
+  const path = CONNECTION_ICON_PATHS[key];
+
+  if (key === "gmail") {
+    return (
+      <svg viewBox="0 0 999.517 749.831" className="w-3.5 h-3.5 flex-shrink-0" aria-hidden>
+        <path fill="#4285F4" d="M68.149 749.831h159.014V363.654L0 193.282v488.4C0 719.391 30.553 749.831 68.149 749.831"/>
+        <path fill="#34A853" d="M772.354 749.831h159.014c37.709 0 68.149-30.553 68.149-68.149v-488.4L772.354 363.654"/>
+        <path fill="#FBBC04" d="M772.354 68.342v295.312l227.163-170.372V102.417c0-84.277-96.203-132.322-163.557-81.779"/>
+        <path fill="#EA4335" d="M227.163 363.654V68.342l272.595 204.447 272.595-204.447v295.312L499.758 568.1"/>
+        <path fill="#C5221F" d="M0 102.417v90.865l227.163 170.372V68.342L163.557 20.638C96.09-29.906 0 18.139 0 102.417"/>
+      </svg>
+    );
+  }
+
+  if (key === "microsoft365" || key === "microsoft-365" || key === "outlook") {
+    return (
+      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 flex-shrink-0" aria-hidden>
+        <path fill="#F25022" d="M1 1h10v10H1z"/>
+        <path fill="#7FBA00" d="M13 1h10v10H13z"/>
+        <path fill="#00A4EF" d="M1 13h10v10H1z"/>
+        <path fill="#FFB900" d="M13 13h10v10H13z"/>
+      </svg>
+    );
+  }
+
+  if (path) {
+    return <img src={path} alt="" className="w-3.5 h-3.5 flex-shrink-0 object-contain" />;
+  }
+
+  return (
+    <Plug
+      className="w-3.5 h-3.5 flex-shrink-0 text-muted-foreground/70 group-hover:text-background/70"
+      strokeWidth={1.5}
+      aria-hidden
+    />
+  );
+}
+
 // ─── Main component ──────────────────────────────────────────────────────────
 
 export function SummaryCards({
@@ -122,6 +186,7 @@ export function SummaryCards({
   const templates = templatePipes.length > 0 ? templatePipes : FALLBACK_TEMPLATES;
   const featured = templates.filter((t) => t.featured);
   const discover = templates.filter((t) => !t.featured);
+  const hasConnectionSuggestions = autoSuggestions.some((s) => s.connectionIcon);
 
   const handleCardClick = (pipe: TemplatePipe) => {
     onSendMessage(pipe.prompt, `${pipe.icon} ${pipe.title}`);
@@ -267,7 +332,7 @@ export function SummaryCards({
       <div className="w-full max-w-lg">
         <div className="flex items-center gap-1.5 mb-1.5 px-1">
           <div className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium font-mono">
-            based on your activity
+            {hasConnectionSuggestions ? "based on activity + connections" : "based on your activity"}
           </div>
           {onRefreshSuggestions && (
             <button
@@ -319,8 +384,15 @@ export function SummaryCards({
                     }`}
                     title={s.text}
                   >
-                    <div className={`text-[11px] leading-tight ${isHero ? "font-medium" : ""} line-clamp-2`}>
-                      {s.text}
+                    <div className="flex items-start gap-1.5 min-w-0">
+                      {s.connectionIcon && (
+                        <span className="mt-px">
+                          <ConnectionSuggestionIcon name={s.connectionIcon} />
+                        </span>
+                      )}
+                      <div className={`min-w-0 text-[11px] leading-tight ${isHero ? "font-medium" : ""} line-clamp-2`}>
+                        {s.text}
+                      </div>
                     </div>
                     {s.preview && (
                       <div className="text-[10px] text-muted-foreground/50 group-hover:text-background/50 leading-tight mt-0.5 truncate">

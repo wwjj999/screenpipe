@@ -58,7 +58,7 @@ import {
   normalizeAppTag,
   formatShortcutDisplay,
 } from "@/lib/chat-utils";
-import { useAutoSuggestions } from "@/lib/hooks/use-auto-suggestions";
+import { useAutoSuggestions, type Suggestion } from "@/lib/hooks/use-auto-suggestions";
 import { SummaryCards } from "@/components/chat/summary-cards";
 import { type CustomTemplate } from "@/lib/summary-templates";
 import { usePipes } from "@/lib/hooks/use-pipes";
@@ -110,6 +110,268 @@ interface MentionSuggestion {
 
 const APP_SUGGESTION_LIMIT = 10;
 const STREAM_RENDER_THROTTLE_MS = 80;
+const FOLLOW_UP_GENERATION_DELAY_MS = 10_000;
+const POST_STREAM_MARKDOWN_DELAY_MS = 1_500;
+const CHAT_RAIL_CLASS = "max-w-4xl mx-auto w-full";
+const CONNECTION_SUGGESTION_LIMIT = 3;
+
+type ConnectedIntegration = {
+  id: string;
+  name: string;
+  icon?: string;
+  category?: string;
+  description?: string;
+};
+
+type PreviewCalendarEvent = {
+  title?: string;
+  start?: string;
+  attendees?: string[];
+  isAllDay?: boolean;
+  is_all_day?: boolean;
+};
+
+const CONNECTION_READ_HINTS = [
+  "read",
+  "query",
+  "search",
+  "access",
+  "list",
+  "fetch",
+  "get ",
+  "events",
+  "notes",
+  "transcripts",
+  "tickets",
+  "issues",
+  "contacts",
+  "deals",
+  "recordings",
+];
+
+function connectionCanSupportReadSuggestion(connection: ConnectedIntegration): boolean {
+  const haystack = `${connection.id} ${connection.name} ${connection.category ?? ""} ${connection.description ?? ""}`.toLowerCase();
+  if (connection.category?.toLowerCase() === "browser") return true;
+  if (haystack.includes("calendar")) return true;
+  return CONNECTION_READ_HINTS.some((hint) => haystack.includes(hint));
+}
+
+function compactSuggestionPart(text: string, max = 48): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max - 3).trim()}...`;
+}
+
+function personNameFromAttendee(attendee: string): string | null {
+  const raw = attendee.split("<")[0].trim() || attendee.split("@")[0].trim();
+  const local = raw.includes("@") ? raw.split("@")[0] : raw;
+  const parts = local
+    .replace(/[._-]+/g, " ")
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => !["me", "you", "no-reply", "noreply", "calendar"].includes(p.toLowerCase()));
+  if (parts.length === 0) return null;
+  return parts
+    .slice(0, 2)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(" ");
+}
+
+function uniqueCompactList(items: string[], maxItems = 4): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of items) {
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+function isTomorrow(date: Date): boolean {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return (
+    date.getFullYear() === tomorrow.getFullYear() &&
+    date.getMonth() === tomorrow.getMonth() &&
+    date.getDate() === tomorrow.getDate()
+  );
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 2) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+async function fetchCalendarPreviewSuggestion(connection: ConnectedIntegration): Promise<Suggestion | null> {
+  const lower = `${connection.id} ${connection.name}`.toLowerCase();
+  const endpoint = lower.includes("google")
+    ? "/connections/google-calendar/events?hours_back=0&hours_ahead=48"
+    : "/connections/calendar/events?hours_back=0&hours_ahead=48";
+
+  try {
+    const res = await localFetch(endpoint);
+    if (!res.ok) return null;
+    const body = await res.json();
+    const rawEvents: PreviewCalendarEvent[] = Array.isArray(body) ? body : body.data ?? [];
+    const events = rawEvents
+      .filter((event) => event.start && !(event.isAllDay ?? event.is_all_day))
+      .map((event) => ({ ...event, startDate: new Date(event.start as string) }))
+      .filter((event) => Number.isFinite(event.startDate.getTime()) && event.startDate.getTime() >= Date.now() - 30 * 60 * 1000)
+      .sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
+    if (events.length === 0) return null;
+
+    const tomorrowEvents = events.filter((event) => isTomorrow(event.startDate));
+    const chosen = (tomorrowEvents.length > 0 ? tomorrowEvents : events).slice(0, 3);
+    const names = uniqueCompactList(
+      chosen.flatMap((event) => (event.attendees ?? []).map(personNameFromAttendee).filter((name): name is string => Boolean(name))),
+      4
+    );
+    const titles = uniqueCompactList(
+      chosen.map((event) => event.title?.trim()).filter((title): title is string => Boolean(title && title !== "(No title)")),
+      2
+    );
+    const descriptor = names.length >= 2
+      ? `${joinNames(names)} call briefs`
+      : titles.length > 0
+        ? `${compactSuggestionPart(titles[0], 42)} brief`
+        : "meeting briefs";
+    const day = tomorrowEvents.length > 0 ? "tomorrow's" : "upcoming";
+
+    return {
+      text: `Prep ${day} ${descriptor} from ${connection.name}`,
+      preview: titles.length > 0 ? titles.join(", ") : `uses ${connection.name}`,
+      priority: 1,
+      connectionIcon: connection.icon || connection.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cleanEmailSubject(subject: string): string {
+  return compactSuggestionPart(
+    subject
+      .replace(/^\s*(re|fwd?):\s*/i, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+    48
+  );
+}
+
+async function fetchGmailPreviewSuggestion(connection: ConnectedIntegration): Promise<Suggestion | null> {
+  try {
+    const query = encodeURIComponent("newer_than:14d (invite OR kickoff OR prep OR meeting)");
+    const listRes = await localFetch(`/connections/gmail/messages?maxResults=3&q=${query}`);
+    if (!listRes.ok) return null;
+    const listBody = await listRes.json();
+    const firstId = listBody?.data?.messages?.[0]?.id;
+    if (!firstId) return null;
+
+    const detailRes = await localFetch(`/connections/gmail/messages/${encodeURIComponent(firstId)}`);
+    if (!detailRes.ok) return null;
+    const detailBody = await detailRes.json();
+    const subject = detailBody?.data?.subject || detailBody?.data?.snippet;
+    if (!subject) return null;
+
+    return {
+      text: `Turn "${cleanEmailSubject(String(subject))}" into concrete prep notes`,
+      preview: `from ${connection.name}`,
+      priority: 2,
+      connectionIcon: connection.icon || connection.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchConnectionPreviewSuggestions(connections: ConnectedIntegration[]): Promise<Suggestion[]> {
+  const tasks = connections.map((connection) => {
+    const lower = `${connection.id} ${connection.name}`.toLowerCase();
+    if (lower.includes("calendar")) return fetchCalendarPreviewSuggestion(connection);
+    if (lower.includes("gmail")) return fetchGmailPreviewSuggestion(connection);
+    return Promise.resolve(null);
+  });
+  const suggestions = await Promise.all(tasks);
+  return suggestions.filter((suggestion): suggestion is Suggestion => Boolean(suggestion));
+}
+
+function suggestionForConnection(connection: ConnectedIntegration): Suggestion | null {
+  if (!connectionCanSupportReadSuggestion(connection)) return null;
+
+  const id = normalizeAppKey(connection.id);
+  const name = connection.name || connection.id;
+  const lower = `${id} ${name}`.toLowerCase();
+  const base: Pick<Suggestion, "connectionIcon" | "preview" | "priority"> = {
+    connectionIcon: connection.icon || connection.id,
+    preview: `uses ${name}`,
+    priority: 2,
+  };
+
+  if (lower.includes("calendar")) {
+    return { ...base, text: `Prep upcoming meeting briefs from ${name}`, priority: 1 };
+  }
+  if (lower.includes("gmail") || lower.includes("email") || lower.includes("outlook") || lower.includes("microsoft365") || lower.includes("microsoft 365")) {
+    return { ...base, text: `Turn recent ${name} invites into concrete prep notes` };
+  }
+  if (lower.includes("docs") || lower.includes("sheets") || lower.includes("notion") || lower.includes("obsidian") || lower.includes("logseq")) {
+    return { ...base, text: `Turn recent ${name} files into a prep sheet` };
+  }
+  if (lower.includes("linear") || lower.includes("github") || lower.includes("jira") || lower.includes("trello") || lower.includes("asana") || lower.includes("clickup") || lower.includes("monday")) {
+    return { ...base, text: `Find open tasks tied to this work in ${name}` };
+  }
+  if (lower.includes("sentry")) {
+    return { ...base, text: `Find the issue driving recent ${name} events` };
+  }
+  if (lower.includes("posthog")) {
+    return { ...base, text: `Find the trend behind recent ${name} activity` };
+  }
+  if (lower.includes("hubspot") || lower.includes("salesforce") || lower.includes("intercom") || lower.includes("zendesk") || lower.includes("pipedrive")) {
+    return { ...base, text: `Prep customer call briefs from ${name}` };
+  }
+  if (lower.includes("zoom") || lower.includes("granola") || lower.includes("fireflies") || lower.includes("otter") || lower.includes("bee") || lower.includes("limitless")) {
+    return { ...base, text: `Pull recent meeting briefs from ${name}` };
+  }
+  if (connection.category?.toLowerCase() === "browser" || lower.includes("browser")) {
+    return { ...base, text: `Read the current page with ${name}` };
+  }
+  if (lower.includes("stripe") || lower.includes("quickbooks") || lower.includes("brex")) {
+    return { ...base, text: `Summarize recent ${name} data for this work` };
+  }
+
+  return { ...base, text: `Search ${name} for context on this work` };
+}
+
+function mergeConnectionSuggestions(
+  autoSuggestions: Suggestion[],
+  connections: ConnectedIntegration[],
+  previewSuggestions: Suggestion[] = []
+): Suggestion[] {
+  const previewIcons = new Set(previewSuggestions.map((s) => s.connectionIcon).filter(Boolean));
+  const connectionSuggestions = connections
+    .filter((connection) => !previewIcons.has(connection.icon || connection.id))
+    .map(suggestionForConnection)
+    .filter((s): s is Suggestion => Boolean(s))
+    .slice(0, CONNECTION_SUGGESTION_LIMIT);
+
+  const combinedConnectionSuggestions = [...previewSuggestions, ...connectionSuggestions].slice(0, CONNECTION_SUGGESTION_LIMIT);
+  if (combinedConnectionSuggestions.length === 0) return autoSuggestions;
+
+  const [first, ...rest] = autoSuggestions;
+  const merged = first
+    ? [first, ...combinedConnectionSuggestions, ...rest]
+    : combinedConnectionSuggestions;
+  const seen = new Set<string>();
+  return merged.filter((suggestion) => {
+    const key = suggestion.text.toLowerCase().replace(/\s+/g, " ").trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 6);
+}
 
 interface Speaker {
   id: number;
@@ -1059,6 +1321,7 @@ const STATIC_APP_ICONS: Record<string, string> = {
   bee: "/images/bee.png",
   airtable: "/images/airtable.png",
   apple: "/images/apple.svg",
+  "apple-calendar": "/images/apple.svg",
   "apple intelligence": "/images/apple-intelligence.png",
   screenpipe: "/images/screenpipe.png",
 };
@@ -1385,6 +1648,14 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
   );
 }
 
+function StreamingTextBlock({ text }: { text: string }) {
+  return (
+    <div className="prose prose-sm max-w-full overflow-hidden break-words whitespace-pre-wrap leading-relaxed dark:prose-invert [word-break:break-word]">
+      {text}
+    </div>
+  );
+}
+
 // Groups consecutive tool blocks into a single group for collapsible rendering
 type GroupedBlock =
   | { type: "text"; text: string; key: number }
@@ -1433,6 +1704,10 @@ function buildToolSummary(toolCalls: ToolCall[]): string {
     return `${count} ${action}`;
   });
   return parts.join(", ");
+}
+
+function toolCallRenderKey(toolCall: ToolCall, index: number): string {
+  return `${toolCall.id || toolCall.toolName || "tool"}:${index}`;
 }
 
 function ToolCallGroup({ toolCalls, defaultExpanded = false }: { toolCalls: ToolCall[]; defaultExpanded?: boolean }) {
@@ -1503,7 +1778,7 @@ function ToolCallGroup({ toolCalls, defaultExpanded = false }: { toolCalls: Tool
             <div className="pl-1 pt-1">
               {toolCalls.map((tc, i) => (
                 <motion.div
-                  key={tc.id}
+                  key={toolCallRenderKey(tc, i)}
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ duration: 0.15, delay: i * 0.03 }}
@@ -1523,7 +1798,17 @@ function ToolCallGroup({ toolCalls, defaultExpanded = false }: { toolCalls: Tool
 }
 
 // Renders message content with interleaved text and tool call blocks
-function MessageContent({ message, onImageClick, onRetry }: { message: Message; onImageClick?: (images: string[], index: number) => void; onRetry?: (prompt: string) => void }) {
+function MessageContent({
+  message,
+  isStreamingMessage = false,
+  onImageClick,
+  onRetry,
+}: {
+  message: Message;
+  isStreamingMessage?: boolean;
+  onImageClick?: (images: string[], index: number) => void;
+  onRetry?: (prompt: string) => void;
+}) {
   const isUser = message.role === "user";
   const { settings } = useSettings();
   const hideThinkingBlocks = settings?.hideThinkingBlocks ?? true;
@@ -1562,6 +1847,9 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
       <div className="space-y-2 min-w-0 w-full overflow-hidden">
         {grouped.map((group) => {
           if (group.type === "text") {
+            if (isStreamingMessage && !isUser) {
+              return <StreamingTextBlock key={`text-${group.key}`} text={group.text} />;
+            }
             return <MarkdownBlock key={`text-${group.key}`} text={group.text} isUser={isUser} />;
           }
           if (group.type === "thinking") {
@@ -1614,7 +1902,11 @@ function MessageContent({ message, onImageClick, onRetry }: { message: Message; 
   return (
     <div className="space-y-2">
       {imageThumbs}
-      <MarkdownBlock text={message.content} isUser={isUser} />
+      {isStreamingMessage && !isUser ? (
+        <StreamingTextBlock text={message.content} />
+      ) : (
+        <MarkdownBlock text={message.content} isUser={isUser} />
+      )}
       {sourceFooter}
       {retryCta}
     </div>
@@ -1862,9 +2154,12 @@ export function StandaloneChat({
   // Connected integrations (gmail, google-sheets, slack, etc.) surfaced in the
   // filter popover so users can mention them directly with @id — helps the
   // agent pick the right connection for a query instead of having to guess.
-  const [connections, setConnections] = useState<
-    Array<{ id: string; name: string; category?: string; description?: string }>
-  >([]);
+  const [connections, setConnections] = useState<ConnectedIntegration[]>([]);
+  const [connectionPreviewSuggestions, setConnectionPreviewSuggestions] = useState<Suggestion[]>([]);
+  const connectionAwareSuggestions = React.useMemo(
+    () => mergeConnectionSuggestions(autoSuggestions, connections, connectionPreviewSuggestions),
+    [autoSuggestions, connections, connectionPreviewSuggestions]
+  );
   // Watch the input section's width so suggestion chips can collapse into
   // a popover on narrow chat columns.
   useEffect(() => {
@@ -1884,11 +2179,11 @@ export function StandaloneChat({
         const res = await localFetch("/connections");
         if (!res.ok) return;
         const json = (await res.json()) as {
-          data?: Array<{ id: string; name: string; connected: boolean; category?: string; description?: string }>;
+          data?: Array<{ id: string; name: string; icon?: string; connected: boolean; category?: string; description?: string }>;
         };
         const list = (json.data ?? [])
           .filter((c) => c.connected)
-          .map((c) => ({ id: c.id, name: c.name, category: c.category, description: c.description }));
+          .map((c) => ({ id: c.id, name: c.name, icon: c.icon, category: c.category, description: c.description }));
         if (!cancelled) setConnections(list);
       } catch {
         // silent — filter just won't surface connections, no UI regression
@@ -1907,11 +2202,11 @@ export function StandaloneChat({
         const res = await localFetch("/connections");
         if (!res.ok) return;
         const json = (await res.json()) as {
-          data?: Array<{ id: string; name: string; connected: boolean; category?: string; description?: string }>;
+          data?: Array<{ id: string; name: string; icon?: string; connected: boolean; category?: string; description?: string }>;
         };
         const list = (json.data ?? [])
           .filter((c) => c.connected)
-          .map((c) => ({ id: c.id, name: c.name, category: c.category, description: c.description }));
+          .map((c) => ({ id: c.id, name: c.name, icon: c.icon, category: c.category, description: c.description }));
         setConnections(list);
       } catch { /* silent */ }
     };
@@ -1921,6 +2216,24 @@ export function StandaloneChat({
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (connections.length === 0) {
+      setConnectionPreviewSuggestions([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetchConnectionPreviewSuggestions(connections).then((suggestions) => {
+      if (!cancelled) setConnectionPreviewSuggestions(suggestions);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connections]);
 
   // Custom summary templates (persisted in settings)
   const [customTemplates, setCustomTemplates] = useState<CustomTemplate[]>([]);
@@ -2107,6 +2420,8 @@ export function StandaloneChat({
   const [followUpSuggestions, setFollowUpSuggestions] = useState<string[]>([]);
   const followUpAbortRef = useRef<AbortController | null>(null);
   const followUpFiredRef = useRef(false);
+  const [deferredMarkdownMessageIds, setDeferredMarkdownMessageIds] = useState<Set<string>>(() => new Set());
+  const deferredMarkdownTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const lastUserMessageRef = useRef<string>("");
 
   // Ref to sendMessage so useEffect callbacks can call it without stale closures
@@ -2162,6 +2477,33 @@ export function StandaloneChat({
       renderStreamingMessageSnapshot();
     }, STREAM_RENDER_THROTTLE_MS);
   }, [renderStreamingMessageSnapshot]);
+
+  const deferMarkdownRender = useCallback((messageId: string) => {
+    const existingTimer = deferredMarkdownTimersRef.current.get(messageId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    setDeferredMarkdownMessageIds((prev) => {
+      if (prev.has(messageId)) return prev;
+      const next = new Set(prev);
+      next.add(messageId);
+      return next;
+    });
+
+    const timer = setTimeout(() => {
+      deferredMarkdownTimersRef.current.delete(messageId);
+      React.startTransition(() => {
+        setDeferredMarkdownMessageIds((prev) => {
+          if (!prev.has(messageId)) return prev;
+          const next = new Set(prev);
+          next.delete(messageId);
+          return next;
+        });
+      });
+    }, POST_STREAM_MARKDOWN_DELAY_MS);
+    deferredMarkdownTimersRef.current.set(messageId, timer);
+  }, []);
 
   // Process an image file to base64
   // Resize image to max 1024px and compress as JPEG to keep base64 payload small
@@ -2720,6 +3062,10 @@ export function StandaloneChat({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      for (const timer of deferredMarkdownTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      deferredMarkdownTimersRef.current.clear();
     };
   }, []);
 
@@ -3203,9 +3549,18 @@ export function StandaloneChat({
   // If user scrolled up to read, don't interrupt them.
   useEffect(() => {
     if (!isUserScrolledUp) {
+      if (isStreaming || isLoading) {
+        const container = scrollContainerRef.current;
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        } else {
+          messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+        }
+        return;
+      }
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, isUserScrolledUp]);
+  }, [messages, isUserScrolledUp, isLoading, isStreaming]);
 
   const handleMessagesScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -3635,17 +3990,6 @@ export function StandaloneChat({
 
             scheduleStreamingMessageRender();
 
-            // Trigger follow-up generation after enough content
-            if (
-              piStreamingTextRef.current.length > 500 &&
-              !followUpFiredRef.current
-            ) {
-              followUpFiredRef.current = true;
-              generateFollowUps(
-                lastUserMessageRef.current,
-                piStreamingTextRef.current
-              );
-            }
           } else if (evt.type === "thinking_start") {
             if (!ensureAssistantPlaceholder()) return;
             piThinkingStartRef.current = Date.now();
@@ -3997,14 +4341,34 @@ export function StandaloneChat({
                 ? { ...m, content, contentBlocks, ...(emptyResponseRetryPrompt ? { retryPrompt: emptyResponseRetryPrompt } : {}) }
                 : m);
             });
+            if (streamedText || content) {
+              deferMarkdownRender(msgId);
+            }
 
             if (!isPipeWatch) {
-              posthog.capture("chat_response_received", {
+              const analyticsPayload = {
                 provider: activePreset?.provider,
                 model: activePreset?.model,
                 has_tool_use: blocksSnapshot.some((b) => b.type === "tool"),
                 response_length: streamedText?.length ?? 0,
-              });
+              };
+              setTimeout(() => {
+                posthog.capture("chat_response_received", analyticsPayload);
+              }, POST_STREAM_MARKDOWN_DELAY_MS);
+
+              const followUpText = streamedText || content || "";
+              if (followUpText.length > 500 && !followUpFiredRef.current) {
+                const followUpTurnId = msgId;
+                const followUpSessionId = piSessionIdRef.current;
+                const userPromptForFollowUps = lastUserMessageRef.current;
+                followUpFiredRef.current = true;
+                setTimeout(() => {
+                  if (!mountedRef.current) return;
+                  if (piSessionIdRef.current !== followUpSessionId) return;
+                  if (piMessageIdRef.current && piMessageIdRef.current !== followUpTurnId) return;
+                  generateFollowUps(userPromptForFollowUps, followUpText);
+                }, FOLLOW_UP_GENERATION_DELAY_MS);
+              }
             }
           }
           if (!isPipeWatch) {
@@ -5702,7 +6066,7 @@ export function StandaloneChat({
             setTimeout(() => document.addEventListener("mousedown", remove), 0);
           }}
         >
-        <div className="max-w-4xl mx-auto w-full p-4 space-y-4">
+        <div className={cn(CHAT_RAIL_CLASS, "p-4 space-y-4")}>
         {/* Pipe-watch banner — shown when the user clicked through from
             a running pipe execution. Replaces the prior synthetic
             "Watching pipe: X" user-bubble sentinel. */}
@@ -5756,7 +6120,7 @@ export function StandaloneChat({
         {messages.length === 0 && !isPreparingPrefill && hasPresets && hasValidModel && (
           <SummaryCards
             onSendMessage={sendMessage}
-            autoSuggestions={autoSuggestions}
+            autoSuggestions={connectionAwareSuggestions}
             suggestionsRefreshing={suggestionsRefreshing}
             onRefreshSuggestions={refreshSuggestions}
             customTemplates={customTemplates}
@@ -5828,10 +6192,10 @@ export function StandaloneChat({
                   setEditingMessageId(message.id);
                 }}
                 className={cn(
-                  "relative rounded-xl px-4 py-3 text-sm overflow-hidden max-w-full transition-all",
+                  "relative rounded-xl text-sm overflow-hidden max-w-full transition-all",
                   message.role === "user"
-                    ? "bg-muted/60 text-foreground"
-                    : "bg-background text-foreground",
+                    ? "bg-muted/60 text-foreground px-4 py-3"
+                    : "bg-background text-foreground py-1",
                   message.role === "user" && !isLoading && editingMessageId !== message.id && "cursor-text",
                   // Queued user messages — visually de-emphasised so the eye stays on
                   // the active turn. Cleared when pi-mono fires message_start for
@@ -5876,7 +6240,15 @@ export function StandaloneChat({
                     className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none"
                   />
                 ) : (
-                  <MessageContent message={message} onImageClick={(images, index) => setImageViewer({ images, index })} onRetry={(prompt) => sendMessage(prompt)} />
+                  <MessageContent
+                    message={message}
+                    isStreamingMessage={
+                      (isStreaming && message.id === piMessageIdRef.current) ||
+                      deferredMarkdownMessageIds.has(message.id)
+                    }
+                    onImageClick={(images, index) => setImageViewer({ images, index })}
+                    onRetry={(prompt) => sendMessage(prompt)}
+                  />
                 )}
               </div>
                 {/* Action buttons - appear on hover, outside the message box */}
@@ -6039,11 +6411,11 @@ export function StandaloneChat({
 
       {/* Input */}
       <div ref={inputSectionRef} className="relative border-t border-border/50 bg-gradient-to-t from-muted/20 to-transparent">
-        <div className="max-w-4xl mx-auto w-full">
+        <div className={CHAT_RAIL_CLASS}>
         {/* Prefill, filters, suggestions first; then attached images in gap; then agent bar; then form */}
         {/* Prefill context indicator from search */}
         {(prefillContext || prefillFrameId) && (
-          <div className="px-3 py-2 border-b border-border/30 bg-muted/30">
+          <div className="px-4 py-2 border-b border-border/30 bg-muted/30">
             <div className="flex items-start justify-between gap-2">
               {prefillFrameId && (
                 <div className="flex-shrink-0">
@@ -6090,7 +6462,7 @@ export function StandaloneChat({
 
         {/* Active filters chips */}
         {hasActiveFilters && (
-          <div className="px-3 py-2 border-b border-border/30 flex flex-wrap gap-1.5">
+          <div className="px-4 py-2 border-b border-border/30 flex flex-wrap gap-1.5">
             {activeFilters.timeRanges.map((range, idx) => (
               <button
                 key={`time-${idx}`}
@@ -6147,7 +6519,7 @@ export function StandaloneChat({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 8 }}
               transition={{ duration: 0.2 }}
-              className="px-3 pt-2 flex flex-col gap-1"
+              className="px-4 pt-2 flex flex-col gap-1"
             >
               <span className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium">follow up</span>
               <div className="flex flex-wrap gap-1.5">
@@ -6171,18 +6543,19 @@ export function StandaloneChat({
             opens a popover when narrow (e.g. BrowserSidebar squeezed the
             chat column). 520px is the rough threshold below which 4 chips
             wrap to multiple rows and eat too much vertical space. */}
-        {messages.length > 0 && !isLoading && autoSuggestions.length > 0 && (
+        {messages.length > 0 && !isLoading && connectionAwareSuggestions.length > 0 && (
           inputSectionWidth >= 520 ? (
-            <div className="px-3 pt-2 flex flex-wrap gap-1.5 items-center">
-              {autoSuggestions.slice(0, 4).map((s, i) => (
+            <div className="px-4 pt-2 flex flex-wrap gap-1.5 items-center">
+              {connectionAwareSuggestions.slice(0, 4).map((s, i) => (
                 <button
                   key={i}
                   type="button"
                   onClick={() => sendMessage(s.text)}
-                  className="px-2.5 py-1 text-[11px] font-mono bg-muted/20 hover:bg-foreground hover:text-background border border-border/20 hover:border-foreground text-muted-foreground transition-all duration-150 cursor-pointer max-w-[280px] truncate"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-muted/20 hover:bg-foreground hover:text-background border border-border/20 hover:border-foreground text-muted-foreground transition-all duration-150 cursor-pointer max-w-[280px]"
                   title={s.preview ? `${s.text} — ${s.preview}` : s.text}
                 >
-                  {s.text}
+                  {s.connectionIcon && <ConnectionToolIcon name={s.connectionIcon} />}
+                  <span className="truncate">{s.text}</span>
                 </button>
               ))}
               <button
@@ -6195,7 +6568,7 @@ export function StandaloneChat({
               </button>
             </div>
           ) : (
-            <div className="px-3 pt-2 flex items-center gap-1.5">
+            <div className="px-4 pt-2 flex items-center gap-1.5">
               <Popover>
                 <PopoverTrigger asChild>
                   <button
@@ -6215,15 +6588,16 @@ export function StandaloneChat({
                   sideOffset={6}
                 >
                   <div className="flex flex-col gap-0.5">
-                    {autoSuggestions.slice(0, 4).map((s, i) => (
+                    {connectionAwareSuggestions.slice(0, 4).map((s, i) => (
                       <button
                         key={i}
                         type="button"
                         onClick={() => sendMessage(s.text)}
-                        className="text-left px-2 py-1.5 text-[11px] font-mono rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors line-clamp-2"
+                        className="text-left px-2 py-1.5 text-[11px] font-mono rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors flex items-start gap-1.5"
                         title={s.preview ? `${s.text} — ${s.preview}` : s.text}
                       >
-                        {s.text}
+                        {s.connectionIcon && <ConnectionToolIcon name={s.connectionIcon} />}
+                        <span className="line-clamp-2">{s.text}</span>
                       </button>
                     ))}
                   </div>
@@ -6243,7 +6617,7 @@ export function StandaloneChat({
 
         {/* Attached images in the gap (above agent bar, like reference); click to open full-screen viewer */}
         {pastedImages.length > 0 && (
-          <div className="px-3 py-2 border-b border-border/30 flex flex-wrap items-center gap-2">
+          <div className="px-4 py-2 border-b border-border/30 flex flex-wrap items-center gap-2">
             {pastedImages.map((img, i) => (
               <div key={i} className="relative group shrink-0">
                 <button
@@ -6270,7 +6644,7 @@ export function StandaloneChat({
           </div>
         )}
 
-        <div className="p-2 border-b border-border/30 flex items-center gap-2">
+        <div className="px-4 py-2 border-b border-border/30 flex items-center gap-2">
           <Popover open={appFilterOpen} onOpenChange={setAppFilterOpen}>
             <PopoverTrigger asChild>
               <button
@@ -6421,7 +6795,10 @@ export function StandaloneChat({
                         }}
                         className="w-full px-3 py-1.5 text-left text-xs font-mono hover:bg-muted/50 transition-colors flex items-center justify-between gap-2"
                       >
-                        <span>{tag}</span>
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <ConnectionToolIcon name={c.icon || c.id} />
+                          <span className="truncate">{tag}</span>
+                        </span>
                         <span className="text-[10px] text-muted-foreground truncate">
                           {c.name}
                         </span>
@@ -6482,7 +6859,7 @@ export function StandaloneChat({
 
         <form
           onSubmit={handleSubmit}
-          className="p-3 relative"
+          className="px-4 pb-4 pt-3 relative"
           onPaste={handlePaste}
         >
           {/* Drop zone overlay — only shown in embedded (non-overlay) chat */}

@@ -11,6 +11,7 @@ export interface Suggestion {
   text: string;
   preview?: string | null;
   priority?: number;
+  connectionIcon?: string | null;
 }
 
 export type ActivityMode =

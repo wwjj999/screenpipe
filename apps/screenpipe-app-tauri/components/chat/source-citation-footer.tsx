@@ -72,12 +72,19 @@ export function SourceCitationFooter({ citations, className }: SourceCitationFoo
       {expanded && (
         <div className="mt-2 grid gap-1.5">
           {citations.map((citation, index) => (
-            <SourceCitationRow key={citation.id || `${citation.title}-${index}`} citation={citation} />
+            <SourceCitationRow key={citationRowKey(citation, index)} citation={citation} />
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function citationRowKey(citation: SourceCitation, index: number): string {
+  const stablePart =
+    citation.id ||
+    `${citation.kind}:${citation.title}:${citation.subtitle ?? ""}:${citation.href ?? ""}`;
+  return `${stablePart}:${index}`;
 }
 
 function SourceCitationRow({ citation }: { citation: SourceCitation }) {
