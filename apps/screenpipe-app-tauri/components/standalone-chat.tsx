@@ -111,7 +111,7 @@ interface MentionSuggestion {
 const APP_SUGGESTION_LIMIT = 10;
 const STREAM_RENDER_THROTTLE_MS = 80;
 const FOLLOW_UP_GENERATION_DELAY_MS = 10_000;
-const POST_STREAM_MARKDOWN_DELAY_MS = 1_500;
+const POST_STREAM_SIDE_EFFECT_DELAY_MS = 1_500;
 const CHAT_RAIL_CLASS = "max-w-4xl mx-auto w-full";
 const CONNECTION_SUGGESTION_LIMIT = 3;
 
@@ -1648,14 +1648,6 @@ function MarkdownBlock({ text, isUser }: { text: string; isUser: boolean }) {
   );
 }
 
-function StreamingTextBlock({ text }: { text: string }) {
-  return (
-    <div className="prose prose-sm max-w-full overflow-hidden break-words whitespace-pre-wrap leading-relaxed dark:prose-invert [word-break:break-word]">
-      {text}
-    </div>
-  );
-}
-
 // Groups consecutive tool blocks into a single group for collapsible rendering
 type GroupedBlock =
   | { type: "text"; text: string; key: number }
@@ -1800,12 +1792,10 @@ function ToolCallGroup({ toolCalls, defaultExpanded = false }: { toolCalls: Tool
 // Renders message content with interleaved text and tool call blocks
 function MessageContent({
   message,
-  isStreamingMessage = false,
   onImageClick,
   onRetry,
 }: {
   message: Message;
-  isStreamingMessage?: boolean;
   onImageClick?: (images: string[], index: number) => void;
   onRetry?: (prompt: string) => void;
 }) {
@@ -1847,9 +1837,6 @@ function MessageContent({
       <div className="space-y-2 min-w-0 w-full overflow-hidden">
         {grouped.map((group) => {
           if (group.type === "text") {
-            if (isStreamingMessage && !isUser) {
-              return <StreamingTextBlock key={`text-${group.key}`} text={group.text} />;
-            }
             return <MarkdownBlock key={`text-${group.key}`} text={group.text} isUser={isUser} />;
           }
           if (group.type === "thinking") {
@@ -1902,11 +1889,7 @@ function MessageContent({
   return (
     <div className="space-y-2">
       {imageThumbs}
-      {isStreamingMessage && !isUser ? (
-        <StreamingTextBlock text={message.content} />
-      ) : (
-        <MarkdownBlock text={message.content} isUser={isUser} />
-      )}
+      <MarkdownBlock text={message.content} isUser={isUser} />
       {sourceFooter}
       {retryCta}
     </div>
@@ -2420,8 +2403,6 @@ export function StandaloneChat({
   const [followUpSuggestions, setFollowUpSuggestions] = useState<string[]>([]);
   const followUpAbortRef = useRef<AbortController | null>(null);
   const followUpFiredRef = useRef(false);
-  const [deferredMarkdownMessageIds, setDeferredMarkdownMessageIds] = useState<Set<string>>(() => new Set());
-  const deferredMarkdownTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const lastUserMessageRef = useRef<string>("");
 
   // Ref to sendMessage so useEffect callbacks can call it without stale closures
@@ -2477,33 +2458,6 @@ export function StandaloneChat({
       renderStreamingMessageSnapshot();
     }, STREAM_RENDER_THROTTLE_MS);
   }, [renderStreamingMessageSnapshot]);
-
-  const deferMarkdownRender = useCallback((messageId: string) => {
-    const existingTimer = deferredMarkdownTimersRef.current.get(messageId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-
-    setDeferredMarkdownMessageIds((prev) => {
-      if (prev.has(messageId)) return prev;
-      const next = new Set(prev);
-      next.add(messageId);
-      return next;
-    });
-
-    const timer = setTimeout(() => {
-      deferredMarkdownTimersRef.current.delete(messageId);
-      React.startTransition(() => {
-        setDeferredMarkdownMessageIds((prev) => {
-          if (!prev.has(messageId)) return prev;
-          const next = new Set(prev);
-          next.delete(messageId);
-          return next;
-        });
-      });
-    }, POST_STREAM_MARKDOWN_DELAY_MS);
-    deferredMarkdownTimersRef.current.set(messageId, timer);
-  }, []);
 
   // Process an image file to base64
   // Resize image to max 1024px and compress as JPEG to keep base64 payload small
@@ -3063,10 +3017,6 @@ export function StandaloneChat({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      for (const timer of deferredMarkdownTimersRef.current.values()) {
-        clearTimeout(timer);
-      }
-      deferredMarkdownTimersRef.current.clear();
     };
   }, []);
 
@@ -4342,10 +4292,6 @@ export function StandaloneChat({
                 ? { ...m, content, contentBlocks, ...(emptyResponseRetryPrompt ? { retryPrompt: emptyResponseRetryPrompt } : {}) }
                 : m);
             });
-            if (streamedText || content) {
-              deferMarkdownRender(msgId);
-            }
-
             if (!isPipeWatch) {
               const analyticsPayload = {
                 provider: activePreset?.provider,
@@ -4355,7 +4301,7 @@ export function StandaloneChat({
               };
               setTimeout(() => {
                 posthog.capture("chat_response_received", analyticsPayload);
-              }, POST_STREAM_MARKDOWN_DELAY_MS);
+              }, POST_STREAM_SIDE_EFFECT_DELAY_MS);
 
               const followUpText = streamedText || content || "";
               if (followUpText.length > 500 && !followUpFiredRef.current) {
@@ -6243,10 +6189,6 @@ export function StandaloneChat({
                 ) : (
                   <MessageContent
                     message={message}
-                    isStreamingMessage={
-                      (isStreaming && message.id === piMessageIdRef.current) ||
-                      deferredMarkdownMessageIds.has(message.id)
-                    }
                     onImageClick={(images, index) => setImageViewer({ images, index })}
                     onRetry={(prompt) => sendMessage(prompt)}
                   />

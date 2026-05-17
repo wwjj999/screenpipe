@@ -338,6 +338,10 @@ fn apply_capture_session_status(
         return base_status;
     }
 
+    if capture_running == Some(true) {
+        return base_status;
+    }
+
     if start_in_progress {
         return RecordingStatus::Starting;
     }
@@ -1211,6 +1215,13 @@ mod tests {
     fn test_running_capture_keeps_recording_status() {
         let status =
             apply_capture_session_status(RecordingStatus::Recording, true, Some(true), false);
+        assert_eq!(status, RecordingStatus::Recording);
+    }
+
+    #[test]
+    fn test_running_capture_wins_over_stale_starting_flag() {
+        let status =
+            apply_capture_session_status(RecordingStatus::Recording, true, Some(true), true);
         assert_eq!(status, RecordingStatus::Recording);
     }
 
