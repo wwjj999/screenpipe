@@ -2574,6 +2574,7 @@ export function StandaloneChat({
     setIsStreaming,
     setPastedImages,
     settings,
+    inlineHistoryEnabled: !hideInlineHistory,
   });
 
   // Read an image file by path and append it to pastedImages (base64 data URL)
