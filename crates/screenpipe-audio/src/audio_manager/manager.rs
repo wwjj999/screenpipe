@@ -982,6 +982,10 @@ impl AudioManager {
         let db = self.db.clone();
         let options = self.options.read().await;
         let transcription_engine = options.transcription_engine.clone();
+        let diarization_mode = match options.transcription_mode {
+            TranscriptionMode::Realtime => "live",
+            TranscriptionMode::Batch => "background",
+        };
         let use_pii_removal = options.use_pii_removal;
         drop(options); // Release lock before spawning
         let metrics = self.metrics.clone();
@@ -990,6 +994,7 @@ impl AudioManager {
             db,
             transcription_receiver,
             transcription_engine,
+            diarization_mode,
             use_pii_removal,
             metrics,
             on_insert,

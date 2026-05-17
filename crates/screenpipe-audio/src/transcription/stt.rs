@@ -29,6 +29,8 @@ use whisper_rs::WhisperState;
 
 use crate::{AudioInput, TranscriptionResult};
 
+use super::TranscriptionOutput;
+
 pub const SAMPLE_RATE: u32 = 16000;
 
 /// Trait for alternate STT engines (e.g. Qwen3-ASR via audiopipe).
@@ -357,25 +359,30 @@ pub async fn run_stt(
     let audio = segment.samples.clone();
     let sample_rate = segment.sample_rate;
     match session
-        .transcribe(&audio, sample_rate, &device.to_string())
+        .transcribe_detailed(&audio, sample_rate, &device.to_string())
         .await
     {
-        Ok(transcription) => Ok(TranscriptionResult {
-            input: AudioInput {
-                data: Arc::new(audio),
-                sample_rate,
-                channels: 1,
-                device: device.clone(),
-                capture_timestamp: timestamp,
-            },
-            transcription: Some(transcription),
-            path,
-            timestamp,
-            error: None,
-            speaker_embedding: segment.embedding.clone(),
-            start_time: segment.start,
-            end_time: segment.end,
-        }),
+        Ok(output) => {
+            let diarization_segments = offset_diarization_segments(output, segment.start);
+            Ok(TranscriptionResult {
+                input: AudioInput {
+                    data: Arc::new(audio),
+                    sample_rate,
+                    channels: 1,
+                    device: device.clone(),
+                    capture_timestamp: timestamp,
+                },
+                transcription: Some(diarization_segments.transcription),
+                path,
+                timestamp,
+                error: None,
+                speaker_embedding: segment.embedding.clone(),
+                start_time: segment.start,
+                end_time: segment.end,
+                diarization_provider: diarization_segments.diarization_provider,
+                diarization_segments: diarization_segments.diarization_segments,
+            })
+        }
         Err(e) => {
             error!("STT error for input {}: {:?}", device, e);
             Ok(TranscriptionResult {
@@ -393,7 +400,25 @@ pub async fn run_stt(
                 speaker_embedding: Vec::new(),
                 start_time: segment.start,
                 end_time: segment.end,
+                diarization_provider: None,
+                diarization_segments: Vec::new(),
             })
         }
     }
+}
+
+fn offset_diarization_segments(
+    mut output: TranscriptionOutput,
+    offset_secs: f64,
+) -> TranscriptionOutput {
+    if offset_secs == 0.0 {
+        return output;
+    }
+
+    for segment in &mut output.diarization_segments {
+        segment.start_time += offset_secs;
+        segment.end_time += offset_secs;
+    }
+
+    output
 }
