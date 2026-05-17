@@ -44,14 +44,14 @@ function SuggestionSkeleton() {
   }, []);
 
   return (
-    <div className="divide-y divide-border/35 border-y border-border/25">
+    <div className="divide-y divide-border/30 border-y border-border/20">
       {[0, 1].map((rowIdx) => {
         const rowOffset = rowIdx * 4;
 
         return (
           <div
             key={rowIdx}
-            className="flex min-h-[44px] items-center gap-2 px-2 py-2"
+            className="flex min-h-[34px] items-center gap-1.5 px-1.5 py-1.5"
           >
             <div
               className="grid shrink-0 gap-px"
@@ -321,7 +321,7 @@ export function SummaryCards({
       )}
 
       {/* ─── Dynamic AI suggestions ─────────────────────────────────────────── */}
-      <div className="w-full max-w-lg">
+      <div className="w-full max-w-md">
         <div className="mb-1 flex justify-end px-1">
           {onRefreshSuggestions && (
             <button
@@ -354,7 +354,7 @@ export function SummaryCards({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="divide-y divide-border/35 border-y border-border/25"
+            className="divide-y divide-border/30 border-y border-border/20"
           >
               {autoSuggestions.slice(0, 2).map((s, i) => {
                 return (
@@ -365,13 +365,13 @@ export function SummaryCards({
                     transition={{ duration: 0.15, delay: i * 0.05 }}
                     type="button"
                     onClick={() => onSendMessage(s.text)}
-                    className="group flex min-h-[44px] w-full items-center gap-2 px-2 py-2 text-left font-mono text-muted-foreground transition-colors duration-150 hover:bg-muted/25 hover:text-foreground"
+                    className="group flex min-h-[34px] w-full items-center gap-1.5 px-1.5 py-1.5 text-left font-mono text-muted-foreground transition-colors duration-150 hover:bg-muted/25 hover:text-foreground"
                     title={s.text}
                   >
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                       {s.connectionIcon && <ConnectionSuggestionIcon name={s.connectionIcon} />}
                     </span>
-                    <span className="min-w-0 flex-1 text-sm leading-snug line-clamp-2">
+                    <span className="min-w-0 flex-1 text-xs leading-tight line-clamp-2">
                       {s.text}
                     </span>
                   </motion.button>
